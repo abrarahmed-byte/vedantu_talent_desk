@@ -127,12 +127,11 @@ function readResume_(payload) {
 
 /**
  * Run this once from the Apps Script editor as the deployment owner.
- * It deliberately touches Drive and Sheets so Google shows the required
- * authorization screen before background résumé processing begins.
+ * It deliberately touches Drive so Google shows the required authorization
+ * screen before background résumé processing begins.
  */
 function authorizeTalentDeskAccess() {
   DriveApp.getRootFolder().getName();
-  SpreadsheetApp.getActiveSpreadsheet();
   return 'Talent Desk can read permitted Sheets and Google Drive résumés.';
 }
 
