@@ -18,6 +18,9 @@ One-time setup:
 Do this only after Cloudflare Access protects the Worker and Admin/Recruiter
 users are present in D1.
 
-The deploying account must be able to open every Sheet an Admin connects. The
+The deploying account must be able to open every Sheet an Admin connects and
+every Google Drive résumé that the AI evidence pilot processes. Google Docs are
+exported to PDF; uploaded PDF and Word résumés retain their original file type.
+The connector enforces a 5 MB résumé limit for the pilot. The
 connector reads at most 200 rows per request; Cloudflare continues in batches
 and updates the UI with progress and ETA.

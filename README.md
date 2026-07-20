@@ -16,7 +16,22 @@ This repository is a fake-data proof of concept for Cloudflare Workers, D1 and s
 - Repository, source, job and workspace-access metadata
 - A zero-cost Apps Script connector for private Google Sheets
 - No Interviews tab
-- No paid AI dependency
+- Repository-driven filter dropdowns that stay current as Sheets sync
+- Optional résumé evidence reconciliation with OpenAI Batch API
+- Separate candidate claims, résumé-backed facts and direct conflicts
+- D1-only search after enrichment, with no paid AI call per search
+
+## Optional AI résumé evidence pilot
+
+The AI workflow is deliberately asynchronous. An Admin starts a 20-profile pilot, the Worker reads each résumé through the private Apps Script connector, and OpenAI processes the requests through the discounted Batch API. Recruiters can continue searching and logging calls throughout the run.
+
+1. Apply `migrations/0005_ai_enrichment.sql` to D1.
+2. Update the deployed Apps Script web app with the current `google-apps-script/Code.gs` so the connector can securely read résumé files.
+3. Add `OPENAI_API_KEY` as an encrypted Cloudflare Worker secret. Optionally set `AI_MODEL`; the default is `gpt-5-nano`.
+4. Deploy the Worker, open **Sources**, and choose **Start 20-profile pilot**.
+5. Watch Queued, Processing, Completed and Needs attention counts in the AI résumé evidence panel.
+
+Temporary OpenAI résumé and batch files are deleted after the structured result is saved. D1 stores the canonical JSON, typed facts, evidence status and short evidence snippets. A form-only claim is saved as `claim_only`, not treated as false. Obtain Vedantu approval for sending candidate rows and résumés to OpenAI before enabling this on production recruitment data.
 
 ## First deployment
 

@@ -61,6 +61,7 @@
               <label><span>Work mode</span><select id="workModeFilter"><option>Any work mode</option><option>Online</option><option>Offline</option><option>Hybrid</option><option>Remote</option></select></label>
               <button id="clearFilters" class="filter-clear">Clear filters</button>
             </div>
+            <label class="evidence-toggle"><input type="checkbox" id="includeClaims"><span><b>Include unverified form claims</b><small>Off by default when résumé evidence is available</small></span></label>
           </section>
 
           <div class="understood" id="understood"><span>✦</span><p>Search understanding will appear here.</p></div>
@@ -85,6 +86,8 @@
           <div class="source-grid" id="employmentSourceGrid"></div>
           <div class="section-heading"><div><h2>Background jobs</h2><p>Every import exposes its current stage, progress and ETA.</p></div></div>
           <div class="jobs" id="jobList"></div>
+          <div class="section-heading"><div><h2>AI résumé evidence</h2><p>Application claims and résumé evidence are reconciled in discounted background batches.</p></div><button class="primary-button" id="startAiPilot">Start 20-profile pilot</button></div>
+          <div class="ai-pipeline" id="aiPipeline"><div class="loading-card"></div></div>
           <div class="section-heading"><div><h2>Workspace access</h2><p>Admins manage sources and users. Recruiters can discover profiles and record calls.</p></div><button class="outline-button" id="addRecruiter">Add team member</button></div>
           <div class="access-list" id="accessList"></div>
         </section>

@@ -8,6 +8,9 @@
   "vars": {
     "AUTH_MODE": "cloudflare-access",
     "ALLOW_PILOT_SOURCE_SYNC": "false",
+    "AI_MODEL": "gpt-5-nano",
+    "AI_BATCH_SIZE": "20",
+    "AI_PREPARE_PER_RUN": "4",
     "ACCESS_TEAM_DOMAIN": "abrar-ahmed-778.cloudflareaccess.com",
     "ACCESS_AUD": "66b9592190ccb536075375759be6a8e13d9c5d980020164ad0baee0e2e6da188"
   },

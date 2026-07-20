@@ -1,6 +1,7 @@
 import { buildFtsQuery, describeIntent, matchesMandatoryIntent, parseSearchIntent, scoreCandidate } from "./search.js";
 import { AuthError, authenticate, canManageSources, requireRole } from "./auth.js";
 import { CANONICAL_FIELDS, EMPLOYMENT_FIELDS, parseSpreadsheetId, previewGoogleSheet, runSourceSync } from "./sync.js";
+import { enqueueAiPilot, getAiMeta, processAiEnrichment, verificationForIntent } from "./ai.js";
 
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
@@ -21,10 +22,44 @@ function list(value) {
   return clean(value, 500).split("·").map((item) => item.trim()).filter(Boolean);
 }
 
+function filterValues(rows, splitPattern = /[·,;|\n]/) {
+  const values = new Map();
+  for (const row of rows || []) {
+    for (const part of String(row.value || "").split(splitPattern)) {
+      const value = clean(part, 120);
+      const key = value.toLowerCase();
+      if (value && !values.has(key)) values.set(key, value);
+    }
+  }
+  return [...values.values()].sort((a, b) => a.localeCompare(b, "en-IN", { sensitivity: "base" })).slice(0, 150);
+}
+
+async function repositoryFilters(env) {
+  const [subjects, languages, workModes] = await Promise.all([
+    env.DB.prepare(`SELECT subject_display AS value FROM candidates WHERE trim(subject_display) <> ''
+      UNION SELECT role AS value FROM candidates WHERE track='Non-teaching' AND trim(role) <> ''`).all(),
+    env.DB.prepare("SELECT DISTINCT languages_display AS value FROM candidates WHERE trim(languages_display) <> ''").all(),
+    env.DB.prepare("SELECT DISTINCT work_mode AS value FROM candidates WHERE trim(work_mode) <> ''").all(),
+  ]);
+  return {
+    subjects: filterValues(subjects.results),
+    languages: filterValues(languages.results, /[·,;|/\n]/),
+    workModes: filterValues(workModes.results, /[·,;|\n]/),
+    experience: [
+      { value: 0, label: "Any experience" }, { value: 12, label: "12+ months" },
+      { value: 24, label: "24+ months" }, { value: 36, label: "36+ months" },
+      { value: 48, label: "48+ months" }, { value: 60, label: "60+ months" },
+      { value: 72, label: "72+ months" }, { value: 120, label: "10+ years" },
+    ],
+  };
+}
+
 function candidateResponse(row, score) {
   let details = {};
+  let aiProfile = null;
   try { details = JSON.parse(row.standardized_json || "{}"); } catch { details = {}; }
-  const { standardized_json: _standardizedJson, ...candidate } = row;
+  try { aiProfile = row.ai_canonical_json ? JSON.parse(row.ai_canonical_json) : null; } catch { aiProfile = null; }
+  const { standardized_json: _standardizedJson, ai_canonical_json: _aiCanonicalJson, ...candidate } = row;
   return {
     ...candidate,
     subjects: list(row.subject_display),
@@ -32,6 +67,7 @@ function candidateResponse(row, score) {
     boards: list(row.boards_display),
     languages: list(row.languages_display),
     details,
+    ai_profile: aiProfile,
     match_percent: score,
   };
 }
@@ -45,6 +81,7 @@ async function getCandidates(request, env) {
   const language = clean(url.searchParams.get("language"), 50);
   const workMode = clean(url.searchParams.get("workMode"), 30);
   const minimumExperience = Math.max(Number(url.searchParams.get("experience")) || 0, 0);
+  const includeClaims = url.searchParams.get("includeClaims") === "1";
   const intent = parseSearchIntent(query);
   const conditions = [];
   const bindings = [];
@@ -56,7 +93,10 @@ async function getCandidates(request, env) {
   const effectiveExperience = Math.max(minimumExperience, intent.minimumExperienceMonths || 0);
   if (effectiveExperience) { conditions.push("c.experience_months >= ?"); bindings.push(effectiveExperience); }
   const ftsQuery = buildFtsQuery(query);
-  let sql = "SELECT c.*, p.standardized_json FROM candidates c LEFT JOIN candidate_profiles p ON p.candidate_id = c.id";
+  let sql = `SELECT c.*, p.standardized_json, ai.status AS ai_status, ai.summary AS ai_summary,
+    ai.canonical_json AS ai_canonical_json, ai.processed_at AS ai_processed_at
+    FROM candidates c LEFT JOIN candidate_profiles p ON p.candidate_id = c.id
+    LEFT JOIN candidate_ai_profiles ai ON ai.candidate_id = c.id`;
   if (ftsQuery) {
     sql += " JOIN candidates_fts ON candidates_fts.candidate_id = c.id";
     conditions.unshift("candidates_fts MATCH ?");
@@ -66,7 +106,10 @@ async function getCandidates(request, env) {
   sql += " ORDER BY c.applied_at DESC LIMIT 800";
   let rows = (await env.DB.prepare(sql).bind(...bindings).all()).results || [];
   if (!rows.length && ftsQuery) {
-    let fallbackSql = "SELECT c.*, p.standardized_json FROM candidates c LEFT JOIN candidate_profiles p ON p.candidate_id = c.id";
+    let fallbackSql = `SELECT c.*, p.standardized_json, ai.status AS ai_status, ai.summary AS ai_summary,
+      ai.canonical_json AS ai_canonical_json, ai.processed_at AS ai_processed_at
+      FROM candidates c LEFT JOIN candidate_profiles p ON p.candidate_id = c.id
+      LEFT JOIN candidate_ai_profiles ai ON ai.candidate_id = c.id`;
     const fallbackConditions = conditions.slice(1);
     const fallbackBindings = bindings.slice(1);
     if (fallbackConditions.length) fallbackSql += ` WHERE ${fallbackConditions.join(" AND ")}`;
@@ -75,6 +118,7 @@ async function getCandidates(request, env) {
   }
   const scored = rows
     .filter((row) => matchesMandatoryIntent(row, intent))
+    .filter((row) => row.ai_status !== "completed" || !verificationForIntent(row.ai_canonical_json, intent, includeClaims).rejected)
     .map((row) => candidateResponse(row, scoreCandidate(row, query, intent)))
     .sort((a, b) => b.match_percent - a.match_percent || String(b.applied_at).localeCompare(String(a.applied_at)))
     .slice(0, 40);
@@ -83,12 +127,12 @@ async function getCandidates(request, env) {
     total: scored.length,
     understoodAs: describeIntent(intent),
     responseTimeMs: Date.now() - started,
-    mode: "Indexed D1 search · no paid AI call",
+    mode: includeClaims ? "Indexed D1 search · verified evidence + claims" : "Indexed D1 search · verified evidence preferred",
   });
 }
 
 async function getMeta(env, user) {
-  const [candidateCounts, sourceCounts, activity, jobs, users] = await Promise.all([
+  const [candidateCounts, sourceCounts, activity, jobs, users, ai] = await Promise.all([
     env.DB.prepare("SELECT COUNT(*) AS profiles, COALESCE(SUM(duplicate_count), 0) AS duplicates, COALESCE(SUM(view_count), 0) AS views, COALESCE(SUM(call_count), 0) AS calls FROM candidates").first(),
     env.DB.prepare(`SELECT s.*, c.spreadsheet_id, c.tab_name, c.last_cursor, c.last_row_count, c.last_error
       FROM sources s LEFT JOIN source_connections c ON c.source_id = s.id ORDER BY s.created_at DESC`).all(),
@@ -100,6 +144,7 @@ async function getMeta(env, user) {
     user.role === "Admin"
       ? env.DB.prepare("SELECT email, display_name, role, active FROM access_users WHERE active=1 ORDER BY role, display_name").all()
       : Promise.resolve({ results: [] }),
+    getAiMeta(env),
   ]);
   return json({
     repository: candidateCounts || { profiles: 0, duplicates: 0, views: 0, calls: 0 },
@@ -107,6 +152,7 @@ async function getMeta(env, user) {
     activity: activity.results || [],
     jobs: jobs.results || [],
     users: users.results || [],
+    ai,
     user,
     pilot: !user.protected,
     notice: user.protected ? "Private Vedantu workspace" : "Fictional data only · zero-cost Cloudflare pilot",
@@ -114,8 +160,10 @@ async function getMeta(env, user) {
 }
 
 async function getCandidateHistory(candidateId, env) {
-  const candidate = await env.DB.prepare(`SELECT c.*, p.standardized_json FROM candidates c
-    LEFT JOIN candidate_profiles p ON p.candidate_id = c.id WHERE c.id = ?`).bind(candidateId).first();
+  const candidate = await env.DB.prepare(`SELECT c.*, p.standardized_json, ai.status AS ai_status,
+    ai.summary AS ai_summary, ai.canonical_json AS ai_canonical_json, ai.processed_at AS ai_processed_at
+    FROM candidates c LEFT JOIN candidate_profiles p ON p.candidate_id = c.id
+    LEFT JOIN candidate_ai_profiles ai ON ai.candidate_id = c.id WHERE c.id = ?`).bind(candidateId).first();
   if (!candidate) return json({ error: "Candidate not found" }, 404);
   const [activity, calls] = await Promise.all([
     env.DB.prepare("SELECT * FROM activity_logs WHERE candidate_id = ? AND action <> 'called' ORDER BY created_at DESC LIMIT 50").bind(candidateId).all(),
@@ -175,13 +223,28 @@ function requireSecureAdmin(user, env) {
 }
 
 async function sessionResponse(env, user) {
+  const filters = await repositoryFilters(env);
   return json({
     user,
     canManageSources: canManageSources(user, env),
     connectorConfigured: Boolean(env.APPS_SCRIPT_CONNECTOR_URL && env.CONNECTOR_SECRET),
+    aiConfigured: Boolean(env.OPENAI_API_KEY),
+    aiModel: clean(env.AI_MODEL || "gpt-5-nano", 120),
+    filters,
     canonicalFields: CANONICAL_FIELDS,
     employmentFields: EMPLOYMENT_FIELDS,
   });
+}
+
+async function startAiPilot(request, env, user, ctx) {
+  requireSecureAdmin(user, env);
+  if (!env.OPENAI_API_KEY) return json({ error: "Add OPENAI_API_KEY in Cloudflare before starting the résumé pilot" }, 409);
+  const payload = await request.json().catch(() => ({}));
+  const result = await enqueueAiPilot(env, payload.limit || 20);
+  await env.DB.prepare("INSERT INTO activity_logs(id, candidate_id, actor, action, detail) VALUES (?, NULL, ?, 'ai_pilot_started', ?)")
+    .bind(crypto.randomUUID(), user.displayName, `${result.queued} résumés queued for evidence extraction`).run();
+  if (ctx?.waitUntil) ctx.waitUntil(processAiEnrichment(env));
+  return json({ ok: true, ...result, message: result.queued ? "Résumé evidence pilot queued" : "These recent résumés are already current" }, 202);
 }
 
 async function previewSource(request, env, user) {
@@ -313,6 +376,7 @@ async function routeApi(request, env, ctx) {
   if (request.method === "POST" && url.pathname === "/api/admin/sources/preview") return previewSource(request, env, user);
   if (request.method === "POST" && url.pathname === "/api/admin/sources") return createSource(request, env, user, ctx);
   if (request.method === "POST" && url.pathname === "/api/admin/users") return addAccessUser(request, env, user);
+  if (request.method === "POST" && url.pathname === "/api/admin/ai/pilot") return startAiPilot(request, env, user, ctx);
 
   const userMatch = url.pathname.match(/^\/api\/admin\/users\/(.+)$/);
   if (userMatch && request.method === "DELETE") return revokeAccessUser(env, user, decodeURIComponent(userMatch[1]));
@@ -345,6 +409,7 @@ export default {
     }
   },
   async scheduled(_event, env, ctx) {
+    ctx.waitUntil(processAiEnrichment(env));
     const sources = await env.DB.prepare(`SELECT id FROM sources
       WHERE connected=1 AND id IN (SELECT source_id FROM source_connections)
       AND (last_sync <= datetime('now', '-15 minutes') OR EXISTS (

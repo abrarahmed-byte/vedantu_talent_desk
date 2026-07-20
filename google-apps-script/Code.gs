@@ -82,6 +82,49 @@ function readRows_(payload) {
   };
 }
 
+function driveFileId_(value) {
+  var input = String(value || '').trim();
+  var pathMatch = input.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (pathMatch) return pathMatch[1];
+  var idMatch = input.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (idMatch) return idMatch[1];
+  return /^[a-zA-Z0-9_-]{20,}$/.test(input) ? input : '';
+}
+
+function safeResumeName_(name, mimeType) {
+  var value = String(name || 'resume').replace(/[\\/:*?"<>|]+/g, '-').slice(0, 180);
+  if (/\.([a-z0-9]{2,5})$/i.test(value)) return value;
+  if (mimeType === MimeType.PDF) return value + '.pdf';
+  if (mimeType === MimeType.MICROSOFT_WORD) return value + '.docx';
+  return value + '.pdf';
+}
+
+function readResume_(payload) {
+  var fileId = driveFileId_(payload.resumeUrl);
+  if (!fileId) throw new Error('The resume link is not a valid Google Drive file link.');
+  var file = DriveApp.getFileById(fileId);
+  var sourceMimeType = file.getMimeType();
+  var blob;
+  if (sourceMimeType.indexOf('application/vnd.google-apps.') === 0) {
+    blob = file.getAs(MimeType.PDF);
+  } else {
+    blob = file.getBlob();
+  }
+  var bytes = blob.getBytes();
+  var maxBytes = Math.min(8 * 1024 * 1024, Math.max(1024, Number(payload.maxBytes) || 5 * 1024 * 1024));
+  if (bytes.length > maxBytes) throw new Error('The resume is larger than the pilot file-size limit.');
+  var mimeType = blob.getContentType() || MimeType.PDF;
+  var updated = file.getLastUpdated();
+  return {
+    ok: true,
+    fileName: safeResumeName_(file.getName(), mimeType),
+    mimeType: mimeType,
+    size: bytes.length,
+    fingerprint: fileId + ':' + (updated ? updated.toISOString() : '') + ':' + bytes.length,
+    base64: Utilities.base64Encode(bytes)
+  };
+}
+
 function doGet() {
   return json_({ ok: true, service: 'Vedantu Talent Desk Google Sheets connector' });
 }
@@ -92,6 +135,7 @@ function doPost(event) {
     requireSecret_(payload);
     if (payload.action === 'preview') return json_(preview_(payload));
     if (payload.action === 'readRows') return json_(readRows_(payload));
+    if (payload.action === 'readResume') return json_(readResume_(payload));
     return json_({ ok: false, error: 'Unknown connector action.' });
   } catch (error) {
     return json_({ ok: false, error: error && error.message ? error.message : String(error) });

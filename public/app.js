@@ -49,8 +49,29 @@ async function api(path, options = {}) {
   return payload;
 }
 
+function replaceSelectOptions(id, leadingLabel, values) {
+  const select = $(id);
+  const current = select.value;
+  const options = [`<option>${escapeHtml(leadingLabel)}</option>`, ...(values || []).map((value) => `<option>${escapeHtml(value)}</option>`)].join("");
+  select.innerHTML = options;
+  if ([...select.options].some((option) => option.value === current)) select.value = current;
+}
+
+function populateRepositoryFilters() {
+  const filters = state.session?.filters || {};
+  replaceSelectOptions("subjectFilter", "All subjects", filters.subjects);
+  replaceSelectOptions("languageFilter", "All languages", filters.languages);
+  replaceSelectOptions("workModeFilter", "Any work mode", filters.workModes);
+  if (filters.experience?.length) {
+    const current = $("experienceFilter").value;
+    $("experienceFilter").innerHTML = filters.experience.map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("");
+    if ([...$("experienceFilter").options].some((option) => option.value === current)) $("experienceFilter").value = current;
+  }
+}
+
 async function loadSession() {
   state.session = await api("/api/session");
+  populateRepositoryFilters();
   const user = state.session.user || {};
   $("signedUserInitials").textContent = initials(user.displayName);
   $("signedUserName").textContent = user.displayName || "Talent Desk user";
@@ -67,6 +88,7 @@ async function loadSession() {
   $("connectSource").disabled = !enabled;
   $("connectEmploymentSource").disabled = !enabled;
   $("addRecruiter").disabled = !enabled;
+  $("startAiPilot").disabled = !enabled || !state.session.aiConfigured;
   const banner = $("readinessBanner");
   if (!user.protected) {
     banner.className = "readiness-banner warning";
@@ -102,6 +124,14 @@ function employmentClass(value) {
   return "";
 }
 
+function aiBadge(candidate) {
+  if (candidate.ai_status !== "completed" || !candidate.ai_profile) return "";
+  const facts = candidate.ai_profile.facts || [];
+  const supported = facts.filter((fact) => fact.resume_status === "supported").length;
+  const claims = facts.filter((fact) => fact.resume_status === "claim_only").length;
+  return `<span class="ai-badge verified">✦ ${supported} resume-backed</span>${claims ? `<span class="ai-badge claim">${claims} claim-only</span>` : ""}`;
+}
+
 function renderCandidates() {
   const list = $("candidateList");
   if (!state.candidates.length) {
@@ -123,7 +153,7 @@ function renderCandidates() {
         </button>
       </div>
       <div class="profile-fit">
-        <span class="track-pill ${trackClass}">${escapeHtml(candidate.track)}</span>
+        <div class="profile-labels"><span class="track-pill ${trackClass}">${escapeHtml(candidate.track)}</span>${aiBadge(candidate)}</div>
         <b>${escapeHtml(candidate.subject_display || candidate.role)}</b>
         <span>${candidate.track === "Teacher" ? "Grades / levels: " : "Focus: "}${escapeHtml(candidate.grades_display || candidate.role)}</span>
         <em class="employment-pill ${employmentClass(candidate.employment_status)}">${escapeHtml(candidate.employment_status)}${escapeHtml(hires)}</em>
@@ -149,6 +179,7 @@ async function runSearch(logSearch = true) {
     language: $("languageFilter").value,
     experience: $("experienceFilter").value,
     workMode: $("workModeFilter").value,
+    includeClaims: $("includeClaims").checked ? "1" : "0",
   });
   $("searchButton").disabled = true;
   $("searchButton").textContent = "Searching…";
@@ -178,6 +209,7 @@ function clearFilters() {
   $("languageFilter").value = "All languages";
   $("experienceFilter").value = "0";
   $("workModeFilter").value = "Any work mode";
+  $("includeClaims").checked = false;
   runSearch(false);
 }
 
@@ -194,6 +226,18 @@ function additionalFacts(candidate) {
     ["How they heard", details.discoverySource], ["Referrer", details.referrer], ["Consent", details.consent],
   ].filter(([, value]) => String(value || "").trim());
   return fields.length ? `<section class="drawer-section"><h3>Application preferences</h3><div class="fact-grid">${fields.map(([label, value]) => fact(label, value)).join("")}</div></section>` : "";
+}
+
+function aiEvidenceSection(candidate) {
+  const profile = candidate.ai_profile;
+  if (!profile) return `<section class="drawer-section ai-evidence"><div class="evidence-heading"><div><h3>Résumé evidence check</h3><p>Not processed yet. Form selections remain candidate-provided claims.</p></div><span class="ai-badge pending">Awaiting AI</span></div></section>`;
+  const facts = (profile.facts || []).filter((item) => ["subject", "exam", "grade", "board", "language", "role", "qualification", "college"].includes(item.category));
+  const items = facts.slice(0, 24).map((item) => {
+    const status = item.resume_status === "supported" ? "Resume-backed" : item.resume_status === "contradicted" ? "Conflict" : "Claim only";
+    const evidence = (item.evidence || [])[0];
+    return `<article class="evidence-row ${escapeHtml(item.resume_status)}"><div><small>${escapeHtml(item.category)}</small><b>${escapeHtml(item.value)}</b>${evidence?.quote ? `<p>“${escapeHtml(evidence.quote)}”${evidence.page ? ` · page ${escapeHtml(evidence.page)}` : ""}</p>` : ""}</div><span>${escapeHtml(status)}</span></article>`;
+  }).join("");
+  return `<section class="drawer-section ai-evidence"><div class="evidence-heading"><div><h3>Résumé evidence check</h3><p>${escapeHtml(candidate.ai_summary || profile.summary || "Application claims reconciled with the résumé.")}</p></div><span class="ai-badge verified">AI processed</span></div><div class="evidence-list">${items || "<p>No teaching evidence was extracted.</p>"}</div><p class="evidence-note">“Claim only” means the résumé did not evidence the form selection; it does not prove the claim is false. Review evidence before making a hiring decision.</p></section>`;
 }
 
 function historyEntry(entry) {
@@ -220,6 +264,7 @@ async function openCandidate(candidateId, focus = "profile") {
       <div class="drawer-actions"><button class="primary-button" id="drawerResume">Resume preview</button><button class="outline-button" id="drawerCall">I called this profile</button><button class="outline-button" id="drawerHistory">View Log History</button></div>
       <section class="drawer-section"><h3>Candidate information</h3><div class="fact-grid">${fact("Applied", formatDate(candidate.applied_at, true))}${fact("Location", `${candidate.city}, ${candidate.state}`)}${fact("Phone", candidate.phone)}${fact("Email", candidate.email)}${fact("Source Sheet", candidate.source_sheet)}${fact("Work mode", candidate.work_mode)}</div></section>
       <section class="drawer-section"><h3>${candidate.track === "Teacher" ? "Teaching profile" : "Professional profile"}</h3><div class="fact-grid">${fact("Subject / function", candidate.subject_display)}${fact("Grades / levels", candidate.grades_display)}${fact("Boards", candidate.boards_display || "Not applicable")}${fact("Languages", candidate.languages_display)}${fact("Experience", `${candidate.experience_months} months`)}${fact("Education", `${candidate.education} · ${candidate.college}`)}</div></section>
+      ${aiEvidenceSection(candidate)}
       ${additionalFacts(candidate)}
       <section class="drawer-section"><h3>Employment and duplicate checks</h3><div class="fact-grid">${fact("Employment status", candidate.employment_status)}${fact("Times hired", candidate.employment_times_hired)}${fact("Duplicate source rows merged", candidate.duplicate_count)}${fact("Canonical identity", "Email / phone exact match")}</div></section>
       <section class="drawer-section hidden" id="resumeSection"><h3>Resume</h3><div class="resume-preview">${escapeHtml(candidate.resume_summary || "Resume link captured from the source Sheet.")}</div>${safeExternalUrl(candidate.resume_url) ? `<a class="resume-link" href="${escapeHtml(safeExternalUrl(candidate.resume_url))}" target="_blank" rel="noopener">Open resume in Google Drive ↗</a>` : ""}</section>
@@ -313,13 +358,25 @@ function renderMeta() {
     const details = `${Number(job.imported_rows) || 0} new · ${Number(job.updated_rows) || 0} updated · ${Number(job.merged_rows) || 0} merged · ${Number(job.detail_failed_rows) || 0} failed`;
     return `<div class="job-row"><div><b>${escapeHtml(job.source_label)}</b><small>${escapeHtml(job.stage)} · ${escapeHtml(job.message)}</small><small class="job-detail">${escapeHtml(details)}</small></div><div><div class="progress"><i style="width:${percent}%"></i></div><small>${job.processed_rows || 0} of ${job.total_rows || "?"} rows${escapeHtml(eta)}</small></div><span class="job-status status-${escapeHtml(String(job.status).toLowerCase())}">${escapeHtml(job.status)} · ${percent}%</span></div>`;
   }).join("") || "<div class='job-row'>No background jobs yet.</div>";
+  const ai = state.meta.ai || {};
+  const aiCounts = ai.counts || {};
+  const aiTotal = Number(aiCounts.total) || 0;
+  const aiDone = (Number(aiCounts.completed) || 0) + (Number(aiCounts.failed) || 0);
+  const aiPercent = aiTotal ? Math.round(aiDone / aiTotal * 100) : 0;
+  const latestBatch = ai.latestBatch;
+  const aiStage = !ai.configured ? "Setup required" : Number(aiCounts.processing) ? "OpenAI batch processing" : Number(aiCounts.queued) ? "Preparing résumé files" : aiTotal ? "Pilot complete" : "Ready for pilot";
+  const aiEta = Number(aiCounts.processing) ? "Often faster, but allow up to 24 hours" : Number(aiCounts.queued) ? "Progress updates automatically every minute" : "Search remains instant while this runs";
+  $("aiPipeline").innerHTML = `<div class="ai-pipeline-copy"><span class="ai-orb">✦</span><div><b>${escapeHtml(aiStage)}</b><p>${ai.configured ? `${escapeHtml(ai.model)} · 50% Batch API discount · batches of up to ${escapeHtml(ai.batchSize)}` : "Add the OpenAI API key in Cloudflare. No key is sent to the browser."}</p><small>${escapeHtml(aiEta)}${latestBatch ? ` · latest batch: ${escapeHtml(String(latestBatch.status).replaceAll("_", " "))}` : ""}</small></div></div><div class="ai-progress"><div><span>Queued <b>${Number(aiCounts.queued) || 0}</b></span><span>Processing <b>${Number(aiCounts.processing) || 0}</b></span><span>Completed <b>${Number(aiCounts.completed) || 0}</b></span><span>Needs attention <b>${Number(aiCounts.failed) || 0}</b></span></div><div class="progress"><i style="width:${aiPercent}%"></i></div><small>${aiDone} of ${aiTotal || 0} profiles finished · ${aiPercent}%</small></div>`;
+  $("startAiPilot").disabled = !canManage || !ai.configured || Number(aiCounts.queued) > 0 || Number(aiCounts.processing) > 0;
   $("accessList").innerHTML = (state.meta.users || []).map((user) => {
     const canRevoke = canManage && user.email !== state.session?.user?.email;
     return `<div class="access-row"><div><b>${escapeHtml(user.display_name)}</b><small>${escapeHtml(user.email)}</small></div><span class="role-pill">${escapeHtml(user.role)}</span><span>${user.active ? "Active" : "Disabled"}</span>${canRevoke ? `<button class="remove-access" data-revoke-user="${escapeHtml(user.email)}" data-revoke-name="${escapeHtml(user.display_name)}">Remove access</button>` : "<span></span>"}</div>`;
   }).join("");
   document.querySelectorAll("[data-source-action]").forEach((button) => button.onclick = () => manageSource(button.dataset.sourceId, button.dataset.sourceAction));
   document.querySelectorAll("[data-revoke-user]").forEach((button) => button.onclick = () => revokeAccess(button.dataset.revokeUser, button.dataset.revokeName));
-  scheduleSyncPolling((state.meta.jobs || []).some((job) => ["Queued", "Running"].includes(job.status)));
+  const sourceActive = (state.meta.jobs || []).some((job) => ["Queued", "Running"].includes(job.status));
+  const aiActive = Number(aiCounts.queued) > 0 || Number(aiCounts.processing) > 0;
+  scheduleSyncPolling(sourceActive || aiActive, sourceActive ? 2500 : 15000);
   renderActivity();
 }
 
@@ -352,11 +409,11 @@ async function resumeQueuedSync() {
   }
 }
 
-function scheduleSyncPolling(active) {
+function scheduleSyncPolling(active, delay = 2500) {
   clearTimeout(state.syncPoller);
   state.syncPoller = null;
   if (!active) return;
-  state.syncPoller = setTimeout(() => loadMeta(), 2500);
+  state.syncPoller = setTimeout(() => loadMeta(), delay);
 }
 
 function normalizeHeading(value) {
@@ -481,6 +538,19 @@ async function manageSource(sourceId, action) {
   } catch (error) { toast(error.message); }
 }
 
+async function startAiPilot() {
+  if (!window.confirm("Start AI evidence extraction for up to 20 recent profiles? Their application rows and résumés will be sent to OpenAI in a discounted background batch.")) return;
+  const button = $("startAiPilot");
+  button.disabled = true;
+  button.textContent = "Queuing pilot…";
+  try {
+    const result = await api("/api/admin/ai/pilot", { method: "POST", body: JSON.stringify({ limit: 20 }) });
+    toast(result.queued ? `${result.queued} résumés queued · you can keep using Talent Desk` : result.message);
+    await loadMeta();
+  } catch (error) { toast(error.message); }
+  finally { button.textContent = "Start 20-profile pilot"; }
+}
+
 function openUserModal() {
   if (!state.session?.canManageSources) {
     toast("User management unlocks after workspace protection is enabled");
@@ -524,11 +594,13 @@ document.querySelectorAll("[data-track]").forEach((button) => button.onclick = (
 $("searchButton").onclick = () => runSearch(true);
 $("searchInput").addEventListener("keydown", (event) => { if (event.key === "Enter") runSearch(true); });
 ["subjectFilter", "languageFilter", "experienceFilter", "workModeFilter"].forEach((id) => $(id).addEventListener("change", () => runSearch(false)));
+$("includeClaims").addEventListener("change", () => runSearch(false));
 $("clearFilters").onclick = clearFilters;
 $("refreshMeta").onclick = () => loadMeta().then(() => toast("Pilot health refreshed"));
 $("refreshActivity").onclick = () => loadMeta().then(() => toast("Activity log refreshed"));
 $("connectSource").onclick = () => openSourceModal("candidate");
 $("connectEmploymentSource").onclick = () => openSourceModal("employment");
+$("startAiPilot").onclick = startAiPilot;
 $("addRecruiter").onclick = openUserModal;
 $("readColumns").onclick = readSourceColumns;
 $("sourceForm").addEventListener("submit", saveSource);
