@@ -2,6 +2,7 @@ import { buildFtsQuery, describeIntent, matchesMandatoryIntent, parseSearchInten
 import { AuthError, authenticate, canManageSources, requireRole } from "./auth.js";
 import { CANONICAL_FIELDS, EMPLOYMENT_FIELDS, parseSpreadsheetId, previewGoogleSheet, runSourceSync } from "./sync.js";
 import { enqueueAiPilot, getAiMeta, processAiEnrichment, verificationForIntent } from "./ai.js";
+import { EXPERIENCE_FILTERS, languageFilterValues, subjectFilterTerms, subjectFilterValues, workModeFilterValues } from "./filters.js";
 
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
@@ -22,18 +23,6 @@ function list(value) {
   return clean(value, 500).split("·").map((item) => item.trim()).filter(Boolean);
 }
 
-function filterValues(rows, splitPattern = /[·,;|\n]/) {
-  const values = new Map();
-  for (const row of rows || []) {
-    for (const part of String(row.value || "").split(splitPattern)) {
-      const value = clean(part, 120);
-      const key = value.toLowerCase();
-      if (value && !values.has(key)) values.set(key, value);
-    }
-  }
-  return [...values.values()].sort((a, b) => a.localeCompare(b, "en-IN", { sensitivity: "base" })).slice(0, 150);
-}
-
 async function repositoryFilters(env) {
   const [subjects, languages, workModes] = await Promise.all([
     env.DB.prepare(`SELECT subject_display AS value FROM candidates WHERE trim(subject_display) <> ''
@@ -42,15 +31,10 @@ async function repositoryFilters(env) {
     env.DB.prepare("SELECT DISTINCT work_mode AS value FROM candidates WHERE trim(work_mode) <> ''").all(),
   ]);
   return {
-    subjects: filterValues(subjects.results),
-    languages: filterValues(languages.results, /[·,;|/\n]/),
-    workModes: filterValues(workModes.results, /[·,;|\n]/),
-    experience: [
-      { value: 0, label: "Any experience" }, { value: 12, label: "12+ months" },
-      { value: 24, label: "24+ months" }, { value: 36, label: "36+ months" },
-      { value: 48, label: "48+ months" }, { value: 60, label: "60+ months" },
-      { value: 72, label: "72+ months" }, { value: 120, label: "10+ years" },
-    ],
+    subjects: subjectFilterValues(subjects.results),
+    languages: languageFilterValues(languages.results),
+    workModes: workModeFilterValues(workModes.results),
+    experience: EXPERIENCE_FILTERS,
   };
 }
 
@@ -87,9 +71,15 @@ async function getCandidates(request, env) {
   const bindings = [];
   const effectiveTrack = track && track !== "All" ? track : intent.track !== "All" ? intent.track : "";
   if (effectiveTrack) { conditions.push("c.track = ?"); bindings.push(effectiveTrack); }
-  if (subject && subject !== "All subjects") { conditions.push("c.search_text LIKE ?"); bindings.push(`%${subject.toLowerCase()}%`); }
+  if (subject && subject !== "All subjects") {
+    const terms = subjectFilterTerms(subject).filter(Boolean).slice(0, 10);
+    conditions.push(`(${terms.map(() => "c.search_text LIKE ?").join(" OR ")})`);
+    bindings.push(...terms.map((term) => `%${term}%`));
+  }
   if (language && language !== "All languages") { conditions.push("c.search_text LIKE ?"); bindings.push(`%${language.toLowerCase()}%`); }
-  if (workMode && workMode !== "Any work mode") { conditions.push("c.work_mode = ?"); bindings.push(workMode); }
+  if (workMode === "Online / Remote") conditions.push("(lower(c.work_mode) LIKE '%online%' OR lower(c.work_mode) LIKE '%remote%')");
+  else if (workMode === "Offline / On-site") conditions.push("(lower(c.work_mode) LIKE '%offline%' OR lower(c.work_mode) LIKE '%on-site%' OR lower(c.work_mode) LIKE '%onsite%')");
+  else if (workMode && workMode !== "Any work mode") { conditions.push("lower(c.work_mode) LIKE ?"); bindings.push(`%${workMode.toLowerCase()}%`); }
   const effectiveExperience = Math.max(minimumExperience, intent.minimumExperienceMonths || 0);
   if (effectiveExperience) { conditions.push("c.experience_months >= ?"); bindings.push(effectiveExperience); }
   const ftsQuery = buildFtsQuery(query);
