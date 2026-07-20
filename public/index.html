@@ -6,8 +6,8 @@
     <meta name="description" content="Vedantu Talent Desk zero-cost Cloudflare pilot">
     <meta name="robots" content="noindex,nofollow">
     <title>Vedantu Talent Desk · Zero-cost pilot</title>
-    <link rel="stylesheet" href="/styles.css?v=20260720-1">
-    <script src="/app.js?v=20260720-1" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=20260720-2">
+    <script src="/app.js?v=20260720-2" defer></script>
   </head>
   <body>
     <div class="pilot-ribbon"><b id="pilotRibbonTitle">ZERO-COST PILOT</b><span id="pilotRibbonText">Fictional profiles only · no real recruitment data</span></div>
@@ -71,7 +71,7 @@
         </section>
 
         <section class="page" id="page-sources">
-          <div class="page-title"><div><p class="kicker">Repository health</p><h1>Sources and synchronization</h1><p>Connected response Sheets are standardized, deduplicated and copied into the central repository.</p></div><div class="page-actions"><button class="outline-button" id="refreshMeta">Refresh status</button><button class="primary-button" id="connectSource">Connect Google Sheet</button></div></div>
+          <div class="page-title"><div><p class="kicker">Repository health</p><h1>Sources and synchronization</h1><p>Application and employee Sheets stay connected to the central repository through background synchronization.</p></div><div class="page-actions"><button class="outline-button" id="refreshMeta">Refresh status</button><button class="outline-button" id="connectEmploymentSource">Connect employee Sheet</button><button class="primary-button" id="connectSource">Connect application Sheet</button></div></div>
           <div class="readiness-banner" id="readinessBanner"><span>◌</span><div><b>Checking source-connection readiness…</b><p>Private Sheets remain unavailable until the workspace is protected.</p></div></div>
           <div class="metrics">
             <div><span>Canonical profiles</span><strong id="metricProfiles">—</strong><small>one applicant per profile</small></div>
@@ -81,6 +81,8 @@
           </div>
           <div class="section-heading"><div><h2>Hiring sources</h2><p>Disconnecting a source stops future updates but keeps profiles already copied to the repository.</p></div></div>
           <div class="source-grid" id="sourceGrid"></div>
+          <div class="section-heading"><div><h2>Employment history sources</h2><p>Active and former employee masters match profiles by work email, personal email, or phone.</p></div></div>
+          <div class="source-grid" id="employmentSourceGrid"></div>
           <div class="section-heading"><div><h2>Background jobs</h2><p>Every import exposes its current stage, progress and ETA.</p></div></div>
           <div class="jobs" id="jobList"></div>
           <div class="section-heading"><div><h2>Workspace access</h2><p>Admins manage sources and users. Recruiters can discover profiles and record calls.</p></div><button class="outline-button" id="addRecruiter">Add team member</button></div>
@@ -115,18 +117,22 @@
     <div class="modal-backdrop hidden" id="sourceBackdrop">
       <form class="source-modal" id="sourceForm">
         <button type="button" class="modal-close" data-close-source aria-label="Close source form">×</button>
-        <p class="kicker">Admin · Google Sheets connector</p><h2>Connect a response Sheet</h2>
+        <p class="kicker" id="sourceKicker">Admin · Google Sheets connector</p><h2 id="sourceTitle">Connect an application Sheet</h2>
         <div class="wizard-steps"><span class="active">1 · Sheet</span><span id="mappingStep">2 · Map columns</span><span>3 · Background sync</span></div>
         <div class="form-grid two">
           <label>Source name<input id="sourceLabel" required placeholder="Example: Teacher applications · July"></label>
           <label>Tab name <small>Optional — first tab if blank</small><input id="sourceTab" placeholder="Form Responses 1"></label>
+        </div>
+        <div class="form-grid two">
+          <label>Header row <small>Use 2 for the standard GreytHR export</small><input id="sourceHeaderRow" type="number" min="1" max="20" value="1" required></label>
+          <label class="hidden" id="employmentStatusField">Employee file type<select id="employmentStatus"><option>Active employee</option><option>Former employee</option></select></label>
         </div>
         <label>Google Sheet URL<input id="sourceUrl" type="url" required placeholder="https://docs.google.com/spreadsheets/d/…"></label>
         <button class="outline-button" type="button" id="readColumns">Read columns</button>
         <div class="mapping-panel hidden" id="mappingPanel">
           <div class="mapping-heading"><div><h3>Confirm column mapping</h3><p id="mappingSummary">Columns are matched automatically. Change only what looks wrong.</p></div><span id="mappingCoverage">0 mapped</span></div>
           <div class="mapping-grid" id="mappingGrid"></div>
-          <p class="mapping-requirement">Required: Full name, Timestamp, and either Email or Phone.</p>
+          <p class="mapping-requirement" id="mappingRequirement">Required: Full name, Timestamp, and either Email or Phone.</p>
         </div>
         <div class="modal-actions"><button class="primary-button" id="saveSource" type="submit" disabled>Connect and start sync</button></div>
       </form>

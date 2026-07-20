@@ -186,8 +186,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .progress { height: 6px; overflow: hidden; border-radius: 6px; background: #e5eaeb; }
 .progress i { display: block; height: 100%; border-radius: 6px; background: var(--green); }
 .job-status, .role-pill { justify-self: end; padding: 4px 8px; border-radius: 11px; color: var(--green); background: var(--green-soft); font-size: 7px; font-weight: 700; }
-.access-row { grid-template-columns: 1fr auto auto; }
+.access-row { grid-template-columns: 1fr auto auto auto; }
 .access-row > span:not(.role-pill) { color: var(--green); font-size: 7px; }
+.remove-access { padding: 6px 9px; border: 1px solid #efcaca; border-radius: 7px; color: var(--red); background: #fff8f8; font-size: 7px; font-weight: 700; }
+.remove-access:hover { border-color: var(--red); background: #fff1f1; }
 
 .activity-layout { display: grid; grid-template-columns: 1fr 270px; gap: 15px; }
 .activity-panel, .activity-summary { border: 1px solid var(--line); border-radius: 12px; background: white; }
@@ -253,6 +255,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 button:disabled { cursor: not-allowed; opacity: .48; transform: none !important; }
 .page-actions, .modal-actions, .source-actions { display: flex; align-items: center; gap: 8px; }
+.page-actions { flex-wrap: wrap; justify-content: flex-end; }
+.source-grid > .empty-state { grid-column: 1 / -1; }
 .readiness-banner { margin: -10px 0 24px; padding: 13px 15px; display: grid; grid-template-columns: 30px 1fr; align-items: center; gap: 11px; border: 1px solid #f0d28c; border-radius: 11px; color: #714c14; background: #fff8df; }
 .readiness-banner > span { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; color: white; background: #d29427; font-weight: 800; }
 .readiness-banner b, .readiness-banner p { display: block; margin: 0; }
@@ -354,6 +358,8 @@ button:disabled { cursor: not-allowed; opacity: .48; transform: none !important;
   .form-grid.two { grid-template-columns: 1fr; }
   .source-modal { padding: 22px 16px; }
   .mapping-grid label { grid-template-columns: 1fr; }
+  .access-row { grid-template-columns: 1fr auto; }
+  .access-row .role-pill, .access-row > span:not(.role-pill), .access-row .remove-access { justify-self: start; }
 }
 
 @media (prefers-reduced-motion: reduce) {

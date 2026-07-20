@@ -8,6 +8,7 @@ const state = {
   toastTimer: null,
   session: null,
   sourcePreview: null,
+  sourceMode: "candidate",
   syncPoller: null,
   syncKickInFlight: false,
 };
@@ -64,6 +65,7 @@ async function loadSession() {
   }
   const enabled = Boolean(state.session.canManageSources);
   $("connectSource").disabled = !enabled;
+  $("connectEmploymentSource").disabled = !enabled;
   $("addRecruiter").disabled = !enabled;
   const banner = $("readinessBanner");
   if (!user.protected) {
@@ -293,25 +295,36 @@ function renderMeta() {
   $("navSourceCount").textContent = (state.meta.sources || []).length;
   $("navActivityCount").textContent = (state.meta.activity || []).length;
   const canManage = Boolean(state.session?.canManageSources);
-  $("sourceGrid").innerHTML = (state.meta.sources || []).map((source) => {
+  const renderSourceCard = (source) => {
     const connectedSheet = Boolean(source.spreadsheet_id);
+    const employmentSource = source.kind === "Employment master";
     const action = source.connected ? "disconnect" : "reconnect";
-    return `<article class="source-card"><header><h3>${escapeHtml(source.label)}</h3><span class="status-${escapeHtml(String(source.status).toLowerCase())}">● ${escapeHtml(source.status)}</span></header><p>${escapeHtml(source.kind)}${connectedSheet ? ` · ${escapeHtml(source.tab_name || "first tab")}` : " · fictional pilot connector"}</p><div class="source-stats"><div><b>${source.total_rows}</b><small>source rows</small></div><div><b>${source.synced_rows}</b><small>synced</small></div><div><b>${source.failed_rows}</b><small>failed</small></div><div><b>${source.duplicate_rows}</b><small>duplicates</small></div></div><footer><span>${source.connected ? "Connected" : "Disconnected"}</span><span>Last sync ${escapeHtml(formatDate(source.last_sync, true))}</span></footer>${connectedSheet && canManage ? `<div class="source-actions"><button class="text-button" data-source-action="sync" data-source-id="${escapeHtml(source.id)}">Sync now</button><button class="text-button" data-source-action="${action}" data-source-id="${escapeHtml(source.id)}">${action === "disconnect" ? "Disconnect" : "Reconnect"}</button></div>` : ""}${source.last_error ? `<p class="source-error">${escapeHtml(source.last_error)}</p>` : ""}</article>`;
-  }).join("") || "<div class='empty-state'><h3>No sources connected</h3><p>An Admin can connect the first response Sheet when setup is ready.</p></div>";
+    const fourthValue = employmentSource ? Number(source.matched_rows) || 0 : Number(source.duplicate_rows) || 0;
+    const fourthLabel = employmentSource ? "profiles matched" : "duplicates";
+    return `<article class="source-card"><header><h3>${escapeHtml(source.label)}</h3><span class="status-${escapeHtml(String(source.status).toLowerCase())}">● ${escapeHtml(source.status)}</span></header><p>${escapeHtml(source.kind)}${connectedSheet ? ` · ${escapeHtml(source.tab_name || "first tab")}` : " · fictional pilot connector"}</p><div class="source-stats"><div><b>${source.total_rows}</b><small>source rows</small></div><div><b>${source.synced_rows}</b><small>${employmentSource ? "checked" : "synced"}</small></div><div><b>${source.failed_rows}</b><small>failed</small></div><div><b>${fourthValue}</b><small>${fourthLabel}</small></div></div><footer><span>${source.connected ? "Connected" : "Disconnected"}</span><span>Last sync ${escapeHtml(formatDate(source.last_sync, true))}</span></footer>${connectedSheet && canManage ? `<div class="source-actions"><button class="text-button" data-source-action="sync" data-source-id="${escapeHtml(source.id)}">Sync now</button><button class="text-button" data-source-action="${action}" data-source-id="${escapeHtml(source.id)}">${action === "disconnect" ? "Disconnect" : "Reconnect"}</button></div>` : ""}${source.last_error ? `<p class="source-error">${escapeHtml(source.last_error)}</p>` : ""}</article>`;
+  };
+  const hiringSources = (state.meta.sources || []).filter((source) => source.kind !== "Employment master");
+  const employmentSources = (state.meta.sources || []).filter((source) => source.kind === "Employment master");
+  $("sourceGrid").innerHTML = hiringSources.map(renderSourceCard).join("") || "<div class='empty-state'><h3>No application Sheets connected</h3><p>An Admin can connect a response Sheet above.</p></div>";
+  $("employmentSourceGrid").innerHTML = employmentSources.map(renderSourceCard).join("") || "<div class='empty-state'><h3>No employee masters connected</h3><p>Connect the Active and Former employee Sheets to enable employment-history matching.</p></div>";
   $("jobList").innerHTML = (state.meta.jobs || []).map((job) => {
     const percent = job.total_rows ? Math.min(100, Math.round(job.processed_rows / job.total_rows * 100)) : (job.status === "Complete" ? 100 : 0);
     const eta = job.status === "Running" && Number(job.eta_seconds) ? ` · about ${job.eta_seconds}s left` : "";
     const details = `${Number(job.imported_rows) || 0} new · ${Number(job.updated_rows) || 0} updated · ${Number(job.merged_rows) || 0} merged · ${Number(job.detail_failed_rows) || 0} failed`;
     return `<div class="job-row"><div><b>${escapeHtml(job.source_label)}</b><small>${escapeHtml(job.stage)} · ${escapeHtml(job.message)}</small><small class="job-detail">${escapeHtml(details)}</small></div><div><div class="progress"><i style="width:${percent}%"></i></div><small>${job.processed_rows || 0} of ${job.total_rows || "?"} rows${escapeHtml(eta)}</small></div><span class="job-status status-${escapeHtml(String(job.status).toLowerCase())}">${escapeHtml(job.status)} · ${percent}%</span></div>`;
   }).join("") || "<div class='job-row'>No background jobs yet.</div>";
-  $("accessList").innerHTML = (state.meta.users || []).map((user) => `<div class="access-row"><div><b>${escapeHtml(user.display_name)}</b><small>${escapeHtml(user.email)}</small></div><span class="role-pill">${escapeHtml(user.role)}</span><span>${user.active ? "Active" : "Disabled"}</span></div>`).join("");
+  $("accessList").innerHTML = (state.meta.users || []).map((user) => {
+    const canRevoke = canManage && user.email !== state.session?.user?.email;
+    return `<div class="access-row"><div><b>${escapeHtml(user.display_name)}</b><small>${escapeHtml(user.email)}</small></div><span class="role-pill">${escapeHtml(user.role)}</span><span>${user.active ? "Active" : "Disabled"}</span>${canRevoke ? `<button class="remove-access" data-revoke-user="${escapeHtml(user.email)}" data-revoke-name="${escapeHtml(user.display_name)}">Remove access</button>` : "<span></span>"}</div>`;
+  }).join("");
   document.querySelectorAll("[data-source-action]").forEach((button) => button.onclick = () => manageSource(button.dataset.sourceId, button.dataset.sourceAction));
+  document.querySelectorAll("[data-revoke-user]").forEach((button) => button.onclick = () => revokeAccess(button.dataset.revokeUser, button.dataset.revokeName));
   scheduleSyncPolling((state.meta.jobs || []).some((job) => ["Queued", "Running"].includes(job.status)));
   renderActivity();
 }
 
 function renderActivity() {
-  const actionCopy = { viewed: "viewed profile", resume_opened: "opened resume preview", called: "logged a call", searched: "searched", synced: "synchronized source" };
+  const actionCopy = { viewed: "viewed profile", resume_opened: "opened resume preview", called: "logged a call", searched: "searched", synced: "synchronized source", access_revoked: "revoked workspace access for" };
   $("activityList").innerHTML = (state.meta?.activity || []).map((entry) => `<div class="activity-row"><span class="avatar orange">${escapeHtml(initials(entry.actor))}</span><span class="event-icon ${escapeHtml(entry.action)}">${entry.action === "synced" ? "↻" : entry.action === "called" ? "☎" : entry.action === "searched" ? "⌕" : "◉"}</span><div><p><b>${escapeHtml(entry.actor)}</b> ${escapeHtml(actionCopy[entry.action] || entry.action)}${entry.candidate_name ? ` <b>${escapeHtml(entry.candidate_name)}</b>` : ""}</p><small>${escapeHtml(entry.detail)}</small></div><time>${escapeHtml(formatDate(entry.created_at, true))}</time></div>`).join("") || "<div class='empty-state'><h3>No activity yet</h3></div>";
 }
 
@@ -359,7 +372,7 @@ function suggestedHeader(field, headers) {
 }
 
 function renderMapping() {
-  const fields = state.session?.canonicalFields || [];
+  const fields = state.sourceMode === "employment" ? state.session?.employmentFields || [] : state.session?.canonicalFields || [];
   const headers = state.sourcePreview?.headers || [];
   $("mappingGrid").innerHTML = fields.map((field) => {
     const suggestion = suggestedHeader(field, headers);
@@ -377,15 +390,19 @@ function currentMapping() {
 
 function validateMapping() {
   const mapping = currentMapping();
-  const valid = Boolean(mapping.fullName && mapping.appliedAt && (mapping.email || mapping.phone));
+  const valid = state.sourceMode === "employment"
+    ? Boolean(mapping.workEmail || mapping.personalEmail || mapping.phone)
+    : Boolean(mapping.fullName && mapping.appliedAt && (mapping.email || mapping.phone));
   $("saveSource").disabled = !valid;
   $("mappingCoverage").textContent = `${Object.keys(mapping).length} mapped`;
   $("mappingSummary").textContent = valid
     ? "Required identity fields are ready. Review the optional matches, then start the background sync."
-    : "Map Full name, Timestamp, and either Email or Phone to continue.";
+    : state.sourceMode === "employment"
+      ? "Map a work email, personal email, or phone to match employees with candidate profiles."
+      : "Map Full name, Timestamp, and either Email or Phone to continue.";
 }
 
-function openSourceModal() {
+function openSourceModal(mode = "candidate") {
   if (!state.session?.canManageSources) {
     toast("Source connection unlocks after Cloudflare Access protection is enabled");
     return;
@@ -394,8 +411,18 @@ function openSourceModal() {
     toast("Finish the Apps Script connector setup in Cloudflare first");
     return;
   }
+  state.sourceMode = mode === "employment" ? "employment" : "candidate";
   state.sourcePreview = null;
   $("sourceForm").reset();
+  $("sourceHeaderRow").value = state.sourceMode === "employment" ? "2" : "1";
+  $("employmentStatusField").classList.toggle("hidden", state.sourceMode !== "employment");
+  $("sourceTitle").textContent = state.sourceMode === "employment" ? "Connect an employee master" : "Connect an application Sheet";
+  $("sourceKicker").textContent = state.sourceMode === "employment" ? "Admin · Employment history" : "Admin · Google Sheets connector";
+  $("sourceLabel").placeholder = state.sourceMode === "employment" ? "Example: GreytHR Active employees" : "Example: Teacher applications · July";
+  $("sourceTab").placeholder = state.sourceMode === "employment" ? "Active Employees" : "Form Responses 1";
+  $("mappingRequirement").textContent = state.sourceMode === "employment"
+    ? "Required: Work email, personal email, or phone. GreytHR exports usually use header row 2."
+    : "Required: Full name, Timestamp, and either Email or Phone.";
   $("mappingPanel").classList.add("hidden");
   $("saveSource").disabled = true;
   $("sourceBackdrop").classList.remove("hidden");
@@ -410,13 +437,13 @@ async function readSourceColumns() {
   try {
     state.sourcePreview = await api("/api/admin/sources/preview", {
       method: "POST",
-      body: JSON.stringify({ sheetUrl: $("sourceUrl").value, tabName: $("sourceTab").value }),
+      body: JSON.stringify({ sheetUrl: $("sourceUrl").value, tabName: $("sourceTab").value, headerRow: Number($("sourceHeaderRow").value) || 1 }),
     });
     $("sourceTab").value = state.sourcePreview.tabName || $("sourceTab").value;
     $("mappingPanel").classList.remove("hidden");
     $("mappingStep").classList.add("active");
     renderMapping();
-    toast(`${state.sourcePreview.headers.length} columns found · ${state.sourcePreview.totalRows} response rows`);
+    toast(`${state.sourcePreview.headers.length} columns found · ${state.sourcePreview.totalRows} ${state.sourceMode === "employment" ? "employee" : "response"} rows`);
   } catch (error) { toast(error.message); }
   finally { button.disabled = false; button.textContent = "Read columns"; }
 }
@@ -427,12 +454,20 @@ async function saveSource(event) {
   button.disabled = true;
   button.textContent = "Connecting…";
   try {
+    const mapping = { ...currentMapping(), _headerRow: Number($("sourceHeaderRow").value) || 1 };
     await api("/api/admin/sources", {
       method: "POST",
-      body: JSON.stringify({ label: $("sourceLabel").value, sheetUrl: $("sourceUrl").value, tabName: $("sourceTab").value, mapping: currentMapping() }),
+      body: JSON.stringify({
+        label: $("sourceLabel").value,
+        sheetUrl: $("sourceUrl").value,
+        tabName: $("sourceTab").value,
+        mapping,
+        sourceType: state.sourceMode,
+        employmentStatus: $("employmentStatus").value,
+      }),
     });
     closeSourceModal();
-    toast("Source connected · background sync started");
+    toast(`${state.sourceMode === "employment" ? "Employee master" : "Application Sheet"} connected · background sync started`);
     await loadMeta();
   } catch (error) { toast(error.message); }
   finally { button.disabled = false; button.textContent = "Connect and start sync"; }
@@ -471,6 +506,15 @@ async function saveAccessUser(event) {
   finally { button.disabled = false; button.textContent = "Give access"; }
 }
 
+async function revokeAccess(email, displayName) {
+  if (!window.confirm(`Remove Talent Desk access for ${displayName || email}? Their past activity will remain in the audit log.`)) return;
+  try {
+    await api(`/api/admin/users/${encodeURIComponent(email)}`, { method: "DELETE" });
+    toast("Workspace access removed");
+    await loadMeta();
+  } catch (error) { toast(error.message); }
+}
+
 document.querySelectorAll("[data-page-link]").forEach((button) => button.onclick = () => showPage(button.dataset.pageLink));
 document.querySelectorAll("[data-track]").forEach((button) => button.onclick = () => {
   state.track = button.dataset.track;
@@ -483,7 +527,8 @@ $("searchInput").addEventListener("keydown", (event) => { if (event.key === "Ent
 $("clearFilters").onclick = clearFilters;
 $("refreshMeta").onclick = () => loadMeta().then(() => toast("Pilot health refreshed"));
 $("refreshActivity").onclick = () => loadMeta().then(() => toast("Activity log refreshed"));
-$("connectSource").onclick = openSourceModal;
+$("connectSource").onclick = () => openSourceModal("candidate");
+$("connectEmploymentSource").onclick = () => openSourceModal("employment");
 $("addRecruiter").onclick = openUserModal;
 $("readColumns").onclick = readSourceColumns;
 $("sourceForm").addEventListener("submit", saveSource);

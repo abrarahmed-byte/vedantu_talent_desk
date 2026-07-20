@@ -34,6 +34,24 @@ export const CANONICAL_FIELDS = [
   { key: "college", label: "College / institution", required: false, aliases: ["college", "institution", "university"] },
 ];
 
+export const EMPLOYMENT_FIELDS = [
+  { key: "employeeId", label: "Employee number", required: false, aliases: ["employee number", "employee id", "emp id"] },
+  { key: "fullName", label: "Employee name", required: false, aliases: ["employee name", "full name", "name"] },
+  { key: "workEmail", label: "Work email", required: false, aliases: ["email", "work email", "official email"] },
+  { key: "personalEmail", label: "Personal email", required: false, aliases: ["employee personal email", "personal email"] },
+  { key: "phone", label: "Phone number", required: false, aliases: ["phone", "phone number", "mobile", "mobile number"] },
+  { key: "joiningDate", label: "Date of joining", required: false, aliases: ["date of joining", "joining date", "doj"] },
+  { key: "leavingDate", label: "Leaving date", required: false, aliases: ["leaving date", "date of leaving", "exit date"] },
+  { key: "leavingReason", label: "Leaving reason", required: false, aliases: ["leaving reason", "exit reason"] },
+  { key: "designation", label: "Designation", required: false, aliases: ["designation", "job title", "role"] },
+  { key: "department", label: "Department", required: false, aliases: ["department"] },
+  { key: "businessUnit", label: "Business unit", required: false, aliases: ["businessunit", "business unit", "division"] },
+  { key: "location", label: "Work location", required: false, aliases: ["location", "work location"] },
+  { key: "employeeType", label: "Employee type", required: false, aliases: ["employeetype", "employee type"] },
+  { key: "employeeSubtype", label: "Employee subtype", required: false, aliases: ["employeesubtype", "employee subtype"] },
+  { key: "contractEndDate", label: "Contract end date", required: false, aliases: ["contract end date"] },
+];
+
 const SYNC_BATCH_SIZE = 50;
 const SYNC_BATCHES_PER_RUN = 1;
 
@@ -163,6 +181,38 @@ export function standardizeRow(row, mapping, sourceLabel) {
   };
 }
 
+export function standardizeEmploymentRow(row, mapping, sourceLabel) {
+  const workEmail = normalizeEmail(mapped(row, mapping, "workEmail", 320));
+  const personalEmail = normalizeEmail(mapped(row, mapping, "personalEmail", 320));
+  const phone = normalizePhone(mapped(row, mapping, "phone", 80));
+  if (!workEmail && !personalEmail && !phone) throw new Error("Work email, personal email, or phone is required for employment matching");
+  const employmentStatus = mapping?._employmentStatus === "Active employee" ? "Active employee" : "Former employee";
+  return {
+    employeeId: mapped(row, mapping, "employeeId", 120),
+    fullName: mapped(row, mapping, "fullName", 200),
+    workEmail,
+    personalEmail,
+    phone,
+    joiningDate: mapped(row, mapping, "joiningDate", 120),
+    leavingDate: mapped(row, mapping, "leavingDate", 120),
+    leavingReason: mapped(row, mapping, "leavingReason", 500),
+    designation: mapped(row, mapping, "designation", 240),
+    department: mapped(row, mapping, "department", 240),
+    businessUnit: mapped(row, mapping, "businessUnit", 240),
+    location: mapped(row, mapping, "location", 240),
+    employeeType: mapped(row, mapping, "employeeType", 160),
+    employeeSubtype: mapped(row, mapping, "employeeSubtype", 160),
+    contractEndDate: mapped(row, mapping, "contractEndDate", 120),
+    employmentStatus,
+    sourceLabel: text(sourceLabel, 200),
+    identities: [
+      workEmail ? { type: "email", value: workEmail } : null,
+      personalEmail ? { type: "email", value: personalEmail } : null,
+      phone ? { type: "phone", value: phone } : null,
+    ].filter(Boolean),
+  };
+}
+
 async function hashRow(row) {
   const bytes = new TextEncoder().encode(JSON.stringify(row));
   const digest = await crypto.subtle.digest("SHA-256", bytes);
@@ -194,6 +244,42 @@ async function resolveCandidate(env, identities) {
   }
   if (candidateIds.size > 1) throw new Error("Email and phone match different existing profiles; manual duplicate review is required");
   return [...candidateIds][0] || "";
+}
+
+async function candidateIdentities(env, candidateId) {
+  const result = await env.DB.prepare(
+    "SELECT identity_type AS type, identity_value AS value FROM candidate_identities WHERE candidate_id = ?",
+  ).bind(candidateId).all();
+  return result.results || [];
+}
+
+export async function reconcileCandidateEmployment(env, candidateId, identities) {
+  const usable = (identities || []).filter((identity) => identity?.value && ["email", "phone"].includes(identity.type));
+  if (!candidateId || !usable.length) return;
+  const clauses = [];
+  const bindings = [];
+  for (const identity of usable) {
+    if (identity.type === "email") {
+      clauses.push("(work_email = ? OR personal_email = ?)");
+      bindings.push(identity.value, identity.value);
+    } else {
+      clauses.push("phone = ?");
+      bindings.push(identity.value);
+    }
+  }
+  const result = await env.DB.prepare(`SELECT source_id, source_row_key, employee_id, work_email, personal_email, phone,
+    joining_date, employment_status FROM employment_records WHERE ${clauses.join(" OR ")}`).bind(...bindings).all();
+  const records = result.results || [];
+  let status = "No employment match";
+  if (records.some((record) => record.employment_status === "Active employee")) status = "Active employee";
+  else if (records.length) status = "Former employee";
+  const hiringEvents = new Set(records.map((record) => {
+    const identity = record.employee_id || record.work_email || record.personal_email || record.phone || `${record.source_id}:${record.source_row_key}`;
+    const joined = record.joining_date || `${record.source_id}:${record.source_row_key}`;
+    return `${identity}:${joined}`;
+  }));
+  await env.DB.prepare(`UPDATE candidates SET employment_status = ?, employment_times_hired = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+    .bind(status, hiringEvents.size, candidateId).run();
 }
 
 async function saveIdentities(env, candidateId, identities) {
@@ -296,6 +382,7 @@ export async function importMappedRows(env, source, rows, mapping) {
 
       await saveIdentities(env, candidateId, item.identities);
       await saveProfile(env, candidateId, item.details);
+      await reconcileCandidateEmployment(env, candidateId, item.identities);
       await env.DB.prepare(`INSERT INTO source_records(
         source_id, source_row_key, candidate_id, row_fingerprint, duplicate_kind, raw_json, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -316,6 +403,81 @@ export async function importMappedRows(env, source, rows, mapping) {
   const workerCount = Math.min(8, rows.length);
   await Promise.all(Array.from({ length: workerCount }, () => processNextRow()));
   return stats;
+}
+
+export async function importEmploymentRows(env, source, rows, mapping, syncToken) {
+  const stats = { processed: 0, successful: 0, imported: 0, updated: 0, merged: 0, skipped: 0, failed: 0, duplicatesWithinSource: 0, duplicatesCentral: 0, errors: [] };
+  const identityLocks = new Map();
+  let nextIndex = 0;
+  async function processNextRow() {
+    while (nextIndex < rows.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const row = rows[index] || {};
+      stats.processed += 1;
+      try {
+        const item = standardizeEmploymentRow(row, mapping, source.label);
+        await withIdentityLocks(identityLocks, item.identities, async () => {
+          const rowKey = text(row._sheetRow || row.__rowNumber || `${item.employeeId}:${item.workEmail || item.personalEmail || item.phone}:${index}`, 400);
+          const fingerprint = await hashRow(row);
+          const existing = await env.DB.prepare(
+            "SELECT row_fingerprint, candidate_id FROM employment_records WHERE source_id = ? AND source_row_key = ?",
+          ).bind(source.id, rowKey).first();
+          if (existing?.row_fingerprint === fingerprint) {
+            await env.DB.prepare("UPDATE employment_records SET sync_token = ?, updated_at = CURRENT_TIMESTAMP WHERE source_id = ? AND source_row_key = ?")
+              .bind(syncToken, source.id, rowKey).run();
+            stats.successful += 1;
+            stats.skipped += 1;
+            return;
+          }
+
+          const candidateId = await resolveCandidate(env, item.identities);
+          const duplicate = await env.DB.prepare(`SELECT 1 AS found FROM employment_records WHERE source_id = ? AND source_row_key <> ?
+            AND ((employee_id <> '' AND employee_id = ?) OR (work_email <> '' AND work_email IN (?, ?))
+              OR (personal_email <> '' AND personal_email IN (?, ?)) OR (phone <> '' AND phone = ?)) LIMIT 1`)
+            .bind(source.id, rowKey, item.employeeId, item.workEmail, item.personalEmail, item.workEmail, item.personalEmail, item.phone).first();
+          if (duplicate) stats.duplicatesWithinSource += 1;
+          await env.DB.prepare(`INSERT INTO employment_records(
+            source_id, source_row_key, employee_id, full_name, work_email, personal_email, phone, joining_date,
+            leaving_date, leaving_reason, designation, department, business_unit, location, employee_type,
+            employee_subtype, contract_end_date, employment_status, candidate_id, row_fingerprint, raw_json, sync_token, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(source_id, source_row_key) DO UPDATE SET employee_id=excluded.employee_id, full_name=excluded.full_name,
+            work_email=excluded.work_email, personal_email=excluded.personal_email, phone=excluded.phone,
+            joining_date=excluded.joining_date, leaving_date=excluded.leaving_date, leaving_reason=excluded.leaving_reason,
+            designation=excluded.designation, department=excluded.department, business_unit=excluded.business_unit,
+            location=excluded.location, employee_type=excluded.employee_type, employee_subtype=excluded.employee_subtype,
+            contract_end_date=excluded.contract_end_date, employment_status=excluded.employment_status,
+            candidate_id=excluded.candidate_id, row_fingerprint=excluded.row_fingerprint, raw_json=excluded.raw_json,
+            sync_token=excluded.sync_token, updated_at=CURRENT_TIMESTAMP`)
+            .bind(source.id, rowKey, item.employeeId, item.fullName, item.workEmail, item.personalEmail, item.phone,
+              item.joiningDate, item.leavingDate, item.leavingReason, item.designation, item.department, item.businessUnit,
+              item.location, item.employeeType, item.employeeSubtype, item.contractEndDate, item.employmentStatus,
+              candidateId || null, fingerprint, JSON.stringify(row), syncToken).run();
+          if (existing) stats.updated += 1;
+          else stats.imported += 1;
+          if (candidateId) await reconcileCandidateEmployment(env, candidateId, item.identities);
+          stats.successful += 1;
+        });
+      } catch (error) {
+        stats.failed += 1;
+        if (stats.errors.length < 12) stats.errors.push({ row: row._sheetRow || index + 2, message: error instanceof Error ? error.message : "Employment row could not be imported" });
+      }
+    }
+  }
+  const workerCount = Math.min(8, rows.length);
+  await Promise.all(Array.from({ length: workerCount }, () => processNextRow()));
+  return stats;
+}
+
+async function sweepEmploymentSource(env, sourceId, syncToken) {
+  const affected = await env.DB.prepare(`SELECT DISTINCT candidate_id FROM employment_records
+    WHERE source_id = ? AND sync_token <> ? AND candidate_id IS NOT NULL`).bind(sourceId, syncToken).all();
+  await env.DB.prepare("DELETE FROM employment_records WHERE source_id = ? AND sync_token <> ?").bind(sourceId, syncToken).run();
+  for (const record of affected.results || []) {
+    const identities = await candidateIdentities(env, record.candidate_id);
+    await reconcileCandidateEmployment(env, record.candidate_id, identities);
+  }
 }
 
 export async function connectorRequest(env, payload) {
@@ -348,11 +510,12 @@ export async function connectorRequest(env, payload) {
   }
 }
 
-export async function previewGoogleSheet(env, sheetUrl, tabName) {
+export async function previewGoogleSheet(env, sheetUrl, tabName, headerRow = 1) {
   const spreadsheetId = parseSpreadsheetId(sheetUrl);
   if (!spreadsheetId) throw new Error("Paste a valid Google Sheets URL");
-  const result = await connectorRequest(env, { action: "preview", spreadsheetId, tabName: text(tabName, 200) });
-  return { spreadsheetId, tabName: result.tabName || tabName || "", headers: result.headers || [], totalRows: Number(result.totalRows) || 0 };
+  const normalizedHeaderRow = Math.max(1, Math.round(Number(headerRow) || 1));
+  const result = await connectorRequest(env, { action: "preview", spreadsheetId, tabName: text(tabName, 200), headerRow: normalizedHeaderRow });
+  return { spreadsheetId, tabName: result.tabName || tabName || "", headerRow: Number(result.headerRow) || normalizedHeaderRow, headers: result.headers || [], totalRows: Math.max(0, (Number(result.totalRows) || 0) - normalizedHeaderRow) };
 }
 
 function addStats(total, next) {
@@ -396,11 +559,15 @@ export async function runSourceSync(env, sourceId, jobId, fullRefresh = false, r
   };
   let mapping = {};
   try { mapping = JSON.parse(source.mapping_json || "{}"); } catch { mapping = {}; }
-  let cursor = fullRefresh
-    ? 2
+  const headerRow = Math.max(1, Math.round(Number(mapping._headerRow) || 1));
+  const dataStartRow = headerRow + 1;
+  const employmentSource = source.kind === "Employment master";
+  const effectiveFullRefresh = fullRefresh || (employmentSource && !resumeJob);
+  let cursor = effectiveFullRefresh
+    ? dataStartRow
     : resumeJob
-      ? Math.max(2, Number(source.last_cursor || 2))
-      : Math.max(2, Number(source.last_cursor || 2) - 50);
+      ? Math.max(dataStartRow, Number(source.last_cursor || dataStartRow))
+      : Math.max(dataStartRow, Number(source.last_cursor || dataStartRow) - 50);
   const started = Date.now();
   let totalRows = Math.max(0, Number(source.last_row_count || 0));
   let sourceComplete = false;
@@ -409,20 +576,22 @@ export async function runSourceSync(env, sourceId, jobId, fullRefresh = false, r
     await persistJob(env, jobId, {
       status: "Running",
       stage: "Reading Google Sheet",
-      processed: Math.max(0, cursor - 2),
+      processed: Math.max(0, cursor - dataStartRow),
       total: totalRows,
       eta: 20,
       message: resumeJob ? "Resuming the next safe batch" : "Fetching the first batch",
     }, stats);
     for (let batch = 0; batch < SYNC_BATCHES_PER_RUN; batch += 1) {
-      const page = await connectorRequest(env, { action: "readRows", spreadsheetId: source.spreadsheet_id, tabName: source.tab_name, startRow: cursor, limit: SYNC_BATCH_SIZE });
+      const page = await connectorRequest(env, { action: "readRows", spreadsheetId: source.spreadsheet_id, tabName: source.tab_name, headerRow, startRow: cursor, limit: SYNC_BATCH_SIZE });
       const rows = Array.isArray(page.rows) ? page.rows : [];
-      totalRows = Math.max(0, Number(page.totalRows || 0) - 1);
-      const batchStats = await importMappedRows(env, source, rows, mapping);
+      totalRows = Math.max(0, Number(page.totalRows || 0) - headerRow);
+      const batchStats = employmentSource
+        ? await importEmploymentRows(env, source, rows, mapping, jobId)
+        : await importMappedRows(env, source, rows, mapping);
       addStats(stats, batchStats);
       cursor = Number(page.nextRow) || cursor + rows.length;
       sourceComplete = Boolean(page.done || !rows.length);
-      const processed = Math.min(totalRows, Math.max(0, cursor - 2));
+      const processed = Math.min(totalRows, Math.max(0, cursor - dataStartRow));
       const elapsedSeconds = Math.max(1, (Date.now() - started) / 1000);
       const rowsPerSecond = Math.max(1, stats.processed / elapsedSeconds);
       const eta = Math.max(0, Math.ceil((totalRows - processed) / rowsPerSecond));
@@ -434,11 +603,15 @@ export async function runSourceSync(env, sourceId, jobId, fullRefresh = false, r
         eta,
         message: `${stats.successful} synced · ${stats.failed} failed · ${stats.duplicatesWithinSource + stats.duplicatesCentral} duplicates merged`,
       }, stats);
-      const progressCounts = await env.DB.prepare(`SELECT COUNT(*) AS synced,
-        SUM(CASE WHEN duplicate_kind <> '' THEN 1 ELSE 0 END) AS duplicates FROM source_records WHERE source_id = ?`).bind(sourceId).first();
+      const progressCounts = employmentSource
+        ? await env.DB.prepare(`SELECT COUNT(*) AS synced, COUNT(DISTINCT candidate_id) AS matched
+          FROM employment_records WHERE source_id = ?`).bind(sourceId).first()
+        : await env.DB.prepare(`SELECT COUNT(*) AS synced,
+          SUM(CASE WHEN duplicate_kind <> '' THEN 1 ELSE 0 END) AS duplicates, 0 AS matched FROM source_records WHERE source_id = ?`).bind(sourceId).first();
       await env.DB.batch([
-        env.DB.prepare(`UPDATE sources SET status=?, connected=1, total_rows=?, synced_rows=?, failed_rows=?, duplicate_rows=?, last_sync=CURRENT_TIMESTAMP WHERE id=?`)
-          .bind(page.done ? "Connected" : "Syncing", totalRows, Number(progressCounts?.synced) || 0, stats.failed, Number(progressCounts?.duplicates) || 0, sourceId),
+        env.DB.prepare(`UPDATE sources SET status=?, connected=1, total_rows=?, synced_rows=?, failed_rows=?, duplicate_rows=?, matched_rows=?, last_sync=CURRENT_TIMESTAMP WHERE id=?`)
+          .bind(page.done ? "Connected" : "Syncing", totalRows, Number(progressCounts?.synced) || 0, stats.failed,
+            employmentSource ? stats.duplicatesWithinSource : Number(progressCounts?.duplicates) || 0, Number(progressCounts?.matched) || 0, sourceId),
         env.DB.prepare("UPDATE source_connections SET last_cursor=?, last_row_count=?, last_error='', updated_at=CURRENT_TIMESTAMP WHERE source_id=?")
           .bind(cursor, totalRows, sourceId),
       ]);
@@ -446,7 +619,7 @@ export async function runSourceSync(env, sourceId, jobId, fullRefresh = false, r
     }
 
     if (!sourceComplete) {
-      const processed = Math.min(totalRows, Math.max(0, cursor - 2));
+      const processed = Math.min(totalRows, Math.max(0, cursor - dataStartRow));
       await persistJob(env, jobId, {
         status: "Queued",
         stage: "Continuing in background",
@@ -458,11 +631,16 @@ export async function runSourceSync(env, sourceId, jobId, fullRefresh = false, r
       return;
     }
 
-    const recordCounts = await env.DB.prepare(`SELECT COUNT(*) AS synced,
-      SUM(CASE WHEN duplicate_kind <> '' THEN 1 ELSE 0 END) AS duplicates FROM source_records WHERE source_id = ?`).bind(sourceId).first();
+    if (employmentSource) await sweepEmploymentSource(env, sourceId, jobId);
+    const recordCounts = employmentSource
+      ? await env.DB.prepare(`SELECT COUNT(*) AS synced, COUNT(DISTINCT candidate_id) AS matched
+        FROM employment_records WHERE source_id = ?`).bind(sourceId).first()
+      : await env.DB.prepare(`SELECT COUNT(*) AS synced,
+        SUM(CASE WHEN duplicate_kind <> '' THEN 1 ELSE 0 END) AS duplicates, 0 AS matched FROM source_records WHERE source_id = ?`).bind(sourceId).first();
     await env.DB.batch([
-      env.DB.prepare(`UPDATE sources SET status='Connected', connected=1, total_rows=?, synced_rows=?, failed_rows=?, duplicate_rows=?, last_sync=CURRENT_TIMESTAMP WHERE id=?`)
-        .bind(totalRows, Number(recordCounts?.synced) || 0, stats.failed, Number(recordCounts?.duplicates) || 0, sourceId),
+      env.DB.prepare(`UPDATE sources SET status='Connected', connected=1, total_rows=?, synced_rows=?, failed_rows=?, duplicate_rows=?, matched_rows=?, last_sync=CURRENT_TIMESTAMP WHERE id=?`)
+        .bind(totalRows, Number(recordCounts?.synced) || 0, stats.failed,
+          employmentSource ? stats.duplicatesWithinSource : Number(recordCounts?.duplicates) || 0, Number(recordCounts?.matched) || 0, sourceId),
       env.DB.prepare(`UPDATE source_connections SET last_cursor=?, last_row_count=?, last_error='', updated_at=CURRENT_TIMESTAMP WHERE source_id=?`)
         .bind(cursor, totalRows, sourceId),
       env.DB.prepare("INSERT INTO activity_logs(id, candidate_id, actor, action, detail) VALUES (?, NULL, 'System', 'synced', ?)")
@@ -480,7 +658,7 @@ export async function runSourceSync(env, sourceId, jobId, fullRefresh = false, r
     }
     stats.failed += 1;
     stats.errors.push({ row: "connector", message });
-    await persistJob(env, jobId, { status: "Failed", stage: "Needs attention", processed: stats.processed, total: totalRows, eta: 0, message }, stats);
+    await persistJob(env, jobId, { status: "Failed", stage: "Needs attention", processed: Math.max(0, cursor - dataStartRow), total: totalRows, eta: 0, message }, stats);
     await env.DB.batch([
       env.DB.prepare("UPDATE sources SET status='Error', failed_rows=failed_rows+1 WHERE id=?").bind(sourceId),
       env.DB.prepare("UPDATE source_connections SET last_error=?, updated_at=CURRENT_TIMESTAMP WHERE source_id=?").bind(message, sourceId),

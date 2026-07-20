@@ -25,31 +25,39 @@ function sheet_(spreadsheetId, tabName) {
   return sheet;
 }
 
-function headers_(sheet) {
+function headerRow_(sheet, requested) {
+  return Math.min(Math.max(1, Number(requested) || 1), Math.max(1, sheet.getLastRow()));
+}
+
+function headers_(sheet, requestedHeaderRow) {
   var lastColumn = sheet.getLastColumn();
   if (!lastColumn) return [];
-  return sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0]
+  var headerRow = headerRow_(sheet, requestedHeaderRow);
+  return sheet.getRange(headerRow, 1, 1, lastColumn).getDisplayValues()[0]
     .map(function (value) { return String(value || '').trim(); });
 }
 
 function preview_(payload) {
   var sheet = sheet_(payload.spreadsheetId, payload.tabName);
+  var headerRow = headerRow_(sheet, payload.headerRow);
   return {
     ok: true,
     tabName: sheet.getName(),
-    headers: headers_(sheet),
+    headerRow: headerRow,
+    headers: headers_(sheet, headerRow),
     totalRows: sheet.getLastRow()
   };
 }
 
 function readRows_(payload) {
   var sheet = sheet_(payload.spreadsheetId, payload.tabName);
-  var headers = headers_(sheet);
+  var headerRow = headerRow_(sheet, payload.headerRow);
+  var headers = headers_(sheet, headerRow);
   var lastRow = sheet.getLastRow();
-  var startRow = Math.max(2, Number(payload.startRow) || 2);
+  var startRow = Math.max(headerRow + 1, Number(payload.startRow) || headerRow + 1);
   var limit = Math.min(200, Math.max(1, Number(payload.limit) || 200));
   if (startRow > lastRow || !headers.length) {
-    return { ok: true, tabName: sheet.getName(), headers: headers, rows: [], totalRows: lastRow, nextRow: startRow, done: true };
+    return { ok: true, tabName: sheet.getName(), headerRow: headerRow, headers: headers, rows: [], totalRows: lastRow, nextRow: startRow, done: true };
   }
 
   var rowCount = Math.min(limit, lastRow - startRow + 1);
@@ -65,6 +73,7 @@ function readRows_(payload) {
   return {
     ok: true,
     tabName: sheet.getName(),
+    headerRow: headerRow,
     headers: headers,
     rows: rows,
     totalRows: lastRow,

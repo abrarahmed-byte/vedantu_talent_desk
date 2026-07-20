@@ -1,6 +1,6 @@
-import { buildFtsQuery, describeIntent, parseSearchIntent, scoreCandidate } from "./search.js";
+import { buildFtsQuery, describeIntent, matchesMandatoryIntent, parseSearchIntent, scoreCandidate } from "./search.js";
 import { AuthError, authenticate, canManageSources, requireRole } from "./auth.js";
-import { CANONICAL_FIELDS, parseSpreadsheetId, previewGoogleSheet, runSourceSync } from "./sync.js";
+import { CANONICAL_FIELDS, EMPLOYMENT_FIELDS, parseSpreadsheetId, previewGoogleSheet, runSourceSync } from "./sync.js";
 
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
@@ -63,17 +63,18 @@ async function getCandidates(request, env) {
     bindings.unshift(ftsQuery);
   }
   if (conditions.length) sql += ` WHERE ${conditions.join(" AND ")}`;
-  sql += " ORDER BY c.applied_at DESC LIMIT 120";
+  sql += " ORDER BY c.applied_at DESC LIMIT 800";
   let rows = (await env.DB.prepare(sql).bind(...bindings).all()).results || [];
   if (!rows.length && ftsQuery) {
     let fallbackSql = "SELECT c.*, p.standardized_json FROM candidates c LEFT JOIN candidate_profiles p ON p.candidate_id = c.id";
     const fallbackConditions = conditions.slice(1);
     const fallbackBindings = bindings.slice(1);
     if (fallbackConditions.length) fallbackSql += ` WHERE ${fallbackConditions.join(" AND ")}`;
-    fallbackSql += " ORDER BY c.applied_at DESC LIMIT 120";
+    fallbackSql += " ORDER BY c.applied_at DESC LIMIT 800";
     rows = (await env.DB.prepare(fallbackSql).bind(...fallbackBindings).all()).results || [];
   }
   const scored = rows
+    .filter((row) => matchesMandatoryIntent(row, intent))
     .map((row) => candidateResponse(row, scoreCandidate(row, query, intent)))
     .sort((a, b) => b.match_percent - a.match_percent || String(b.applied_at).localeCompare(String(a.applied_at)))
     .slice(0, 40);
@@ -97,7 +98,7 @@ async function getMeta(env, user) {
       FROM sync_jobs j JOIN sources s ON s.id = j.source_id LEFT JOIN sync_job_stats st ON st.job_id = j.id
       ORDER BY j.updated_at DESC LIMIT 12`).all(),
     user.role === "Admin"
-      ? env.DB.prepare("SELECT email, display_name, role, active FROM access_users ORDER BY role, display_name").all()
+      ? env.DB.prepare("SELECT email, display_name, role, active FROM access_users WHERE active=1 ORDER BY role, display_name").all()
       : Promise.resolve({ results: [] }),
   ]);
   return json({
@@ -179,13 +180,14 @@ async function sessionResponse(env, user) {
     canManageSources: canManageSources(user, env),
     connectorConfigured: Boolean(env.APPS_SCRIPT_CONNECTOR_URL && env.CONNECTOR_SECRET),
     canonicalFields: CANONICAL_FIELDS,
+    employmentFields: EMPLOYMENT_FIELDS,
   });
 }
 
 async function previewSource(request, env, user) {
   requireSecureAdmin(user, env);
   const payload = await request.json().catch(() => ({}));
-  const result = await previewGoogleSheet(env, payload.sheetUrl, payload.tabName);
+  const result = await previewGoogleSheet(env, payload.sheetUrl, payload.tabName, payload.headerRow);
   return json(result);
 }
 
@@ -228,8 +230,14 @@ async function createSource(request, env, user, ctx) {
   const spreadsheetId = parseSpreadsheetId(sheetUrl);
   const tabName = clean(payload.tabName, 180);
   const mapping = payload.mapping && typeof payload.mapping === "object" ? payload.mapping : {};
+  const employmentSource = payload.sourceType === "employment";
+  mapping._headerRow = Math.max(1, Math.round(Number(mapping._headerRow) || 1));
+  if (employmentSource) mapping._employmentStatus = payload.employmentStatus === "Active employee" ? "Active employee" : "Former employee";
   if (!label || !spreadsheetId) return json({ error: "Source name and a valid Google Sheets URL are required" }, 400);
-  if (!mapping.fullName || !mapping.appliedAt || (!mapping.email && !mapping.phone)) {
+  if (employmentSource && !mapping.workEmail && !mapping.personalEmail && !mapping.phone) {
+    return json({ error: "Map a work email, personal email, or phone before connecting the employment master" }, 400);
+  }
+  if (!employmentSource && (!mapping.fullName || !mapping.appliedAt || (!mapping.email && !mapping.phone))) {
     return json({ error: "Map Full name, Timestamp, and either Email or Phone before connecting" }, 400);
   }
   const duplicate = await env.DB.prepare("SELECT source_id FROM source_connections WHERE spreadsheet_id = ? AND tab_name = ?")
@@ -239,7 +247,7 @@ async function createSource(request, env, user, ctx) {
   const sourceId = crypto.randomUUID();
   await env.DB.batch([
     env.DB.prepare(`INSERT INTO sources(id, label, kind, connected, status, total_rows, synced_rows, failed_rows, duplicate_rows)
-      VALUES (?, ?, 'Google Sheet', 1, 'Queued', 0, 0, 0, 0)`).bind(sourceId, label),
+      VALUES (?, ?, ?, 1, 'Queued', 0, 0, 0, 0)`).bind(sourceId, label, employmentSource ? "Employment master" : "Google Sheet"),
     env.DB.prepare(`INSERT INTO source_connections(source_id, spreadsheet_id, sheet_url, tab_name, mapping_json, created_by)
       VALUES (?, ?, ?, ?, ?, ?)`).bind(sourceId, spreadsheetId, sheetUrl, tabName, JSON.stringify(mapping), user.email),
   ]);
@@ -272,6 +280,25 @@ async function addAccessUser(request, env, user) {
   return json({ ok: true });
 }
 
+async function revokeAccessUser(env, user, targetEmail) {
+  requireSecureAdmin(user, env);
+  const email = clean(targetEmail, 320).toLowerCase();
+  if (!email) return json({ error: "User email is required" }, 400);
+  if (email === user.email) return json({ error: "You cannot revoke your own access while signed in" }, 400);
+  const target = await env.DB.prepare("SELECT email, display_name, role, active FROM access_users WHERE lower(email)=? LIMIT 1").bind(email).first();
+  if (!target || !Number(target.active)) return json({ error: "This user does not have active Talent Desk access" }, 404);
+  if (target.role === "Admin") {
+    const adminCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM access_users WHERE role='Admin' AND active=1").first();
+    if (Number(adminCount?.count || 0) <= 1) return json({ error: "Keep at least one active Admin in the workspace" }, 409);
+  }
+  await env.DB.batch([
+    env.DB.prepare("UPDATE access_users SET active=0 WHERE lower(email)=?").bind(email),
+    env.DB.prepare("INSERT INTO activity_logs(id, candidate_id, actor, action, detail) VALUES (?, NULL, ?, 'access_revoked', ?)")
+      .bind(crypto.randomUUID(), user.displayName, `${target.display_name} · ${email}`),
+  ]);
+  return json({ ok: true });
+}
+
 async function routeApi(request, env, ctx) {
   const url = new URL(request.url);
   const user = await authenticate(request, env);
@@ -286,6 +313,9 @@ async function routeApi(request, env, ctx) {
   if (request.method === "POST" && url.pathname === "/api/admin/sources/preview") return previewSource(request, env, user);
   if (request.method === "POST" && url.pathname === "/api/admin/sources") return createSource(request, env, user, ctx);
   if (request.method === "POST" && url.pathname === "/api/admin/users") return addAccessUser(request, env, user);
+
+  const userMatch = url.pathname.match(/^\/api\/admin\/users\/(.+)$/);
+  if (userMatch && request.method === "DELETE") return revokeAccessUser(env, user, decodeURIComponent(userMatch[1]));
 
   const sourceMatch = url.pathname.match(/^\/api\/admin\/sources\/([^/]+)\/(sync|disconnect|reconnect)$/);
   if (sourceMatch && request.method === "POST") {

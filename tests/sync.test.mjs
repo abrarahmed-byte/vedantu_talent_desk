@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { connectorRequest, mergeStandardized, parseSpreadsheetId, standardizeRow, withIdentityLocks } from "../src/sync.js";
+import { connectorRequest, mergeStandardized, parseSpreadsheetId, standardizeEmploymentRow, standardizeRow, withIdentityLocks } from "../src/sync.js";
 
 test("parses a Google Spreadsheet URL or id", () => {
   const id = "1AbCdEfGhIjKlMnOpQrStUvWxYz123456";
@@ -41,6 +41,33 @@ test("standardizes a non-teaching application", () => {
 test("requires a name and a deduplication identity", () => {
   assert.throws(() => standardizeRow({ Time: "2026-07-20" }, { appliedAt: "Time" }, "Test"), /Full name/);
   assert.throws(() => standardizeRow({ Name: "No Identity" }, { fullName: "Name" }, "Test"), /Email or phone/);
+});
+
+test("standardizes GreytHR employee rows with work and personal identities", () => {
+  const row = {
+    "Employee Number": "VD1234",
+    "Employee Name": "Anita Rao",
+    Email: "anita.rao@vedantu.com",
+    "Employee Personal Email": "anita@example.com",
+    Phone: "+91 98765 43210",
+    "Date Of Joining": "10 Jul 2022",
+  };
+  const mapping = {
+    employeeId: "Employee Number",
+    fullName: "Employee Name",
+    workEmail: "Email",
+    personalEmail: "Employee Personal Email",
+    phone: "Phone",
+    joiningDate: "Date Of Joining",
+    _employmentStatus: "Active employee",
+  };
+  const result = standardizeEmploymentRow(row, mapping, "GreytHR Active");
+  assert.equal(result.employeeId, "VD1234");
+  assert.equal(result.workEmail, "anita.rao@vedantu.com");
+  assert.equal(result.personalEmail, "anita@example.com");
+  assert.equal(result.phone, "919876543210");
+  assert.equal(result.employmentStatus, "Active employee");
+  assert.equal(result.identities.length, 3);
 });
 
 test("incremental merge keeps old data when a new row is blank", () => {
