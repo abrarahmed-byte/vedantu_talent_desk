@@ -34,7 +34,7 @@ export const CANONICAL_FIELDS = [
   { key: "college", label: "College / institution", required: false, aliases: ["college", "institution", "university"] },
 ];
 
-const SYNC_BATCH_SIZE = 100;
+const SYNC_BATCH_SIZE = 50;
 const SYNC_BATCHES_PER_RUN = 1;
 
 function text(value, max = 1000) {
