@@ -34,6 +34,9 @@ export const CANONICAL_FIELDS = [
   { key: "college", label: "College / institution", required: false, aliases: ["college", "institution", "university"] },
 ];
 
+const SYNC_BATCH_SIZE = 25;
+const SYNC_BATCHES_PER_RUN = 3;
+
 function text(value, max = 1000) {
   if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean).join(" · ").slice(0, max);
   return String(value ?? "").trim().slice(0, max);
@@ -324,22 +327,49 @@ async function persistJob(env, jobId, state, stats) {
   ]);
 }
 
-export async function runSourceSync(env, sourceId, jobId, fullRefresh = false) {
-  const source = await env.DB.prepare(`SELECT s.*, c.spreadsheet_id, c.tab_name, c.mapping_json, c.last_cursor
+export async function runSourceSync(env, sourceId, jobId, fullRefresh = false, resumeJob = false) {
+  const source = await env.DB.prepare(`SELECT s.*, c.spreadsheet_id, c.tab_name, c.mapping_json, c.last_cursor, c.last_row_count
     FROM sources s JOIN source_connections c ON c.source_id = s.id WHERE s.id = ?`).bind(sourceId).first();
   if (!source) return;
-  const stats = { processed: 0, successful: 0, imported: 0, updated: 0, merged: 0, skipped: 0, failed: 0, duplicatesWithinSource: 0, duplicatesCentral: 0, errors: [] };
+  const savedStats = resumeJob
+    ? await env.DB.prepare("SELECT * FROM sync_job_stats WHERE job_id = ?").bind(jobId).first()
+    : null;
+  let savedErrors = [];
+  try { savedErrors = JSON.parse(savedStats?.error_json || "[]"); } catch { savedErrors = []; }
+  const stats = {
+    processed: 0,
+    successful: Number(savedStats?.imported_rows || 0) + Number(savedStats?.updated_rows || 0) + Number(savedStats?.merged_rows || 0) + Number(savedStats?.skipped_rows || 0),
+    imported: Number(savedStats?.imported_rows || 0),
+    updated: Number(savedStats?.updated_rows || 0),
+    merged: Number(savedStats?.merged_rows || 0),
+    skipped: Number(savedStats?.skipped_rows || 0),
+    failed: Number(savedStats?.failed_rows || 0),
+    duplicatesWithinSource: Number(savedStats?.duplicates_within_source || 0),
+    duplicatesCentral: Number(savedStats?.duplicates_central || 0),
+    errors: Array.isArray(savedErrors) ? savedErrors.slice(0, 12) : [],
+  };
   let mapping = {};
   try { mapping = JSON.parse(source.mapping_json || "{}"); } catch { mapping = {}; }
-  let cursor = fullRefresh ? 2 : Math.max(2, Number(source.last_cursor || 2) - 50);
+  let cursor = fullRefresh
+    ? 2
+    : resumeJob
+      ? Math.max(2, Number(source.last_cursor || 2))
+      : Math.max(2, Number(source.last_cursor || 2) - 50);
   const started = Date.now();
-  let totalRows = 0;
+  let totalRows = Math.max(0, Number(source.last_row_count || 0));
   let sourceComplete = false;
 
   try {
-    await persistJob(env, jobId, { status: "Running", stage: "Reading Google Sheet", processed: 0, total: 0, eta: 20, message: "Fetching the first batch" }, stats);
-    for (let batch = 0; batch < 25; batch += 1) {
-      const page = await connectorRequest(env, { action: "readRows", spreadsheetId: source.spreadsheet_id, tabName: source.tab_name, startRow: cursor, limit: 200 });
+    await persistJob(env, jobId, {
+      status: "Running",
+      stage: "Reading Google Sheet",
+      processed: Math.max(0, cursor - 2),
+      total: totalRows,
+      eta: 20,
+      message: resumeJob ? "Resuming the next safe batch" : "Fetching the first batch",
+    }, stats);
+    for (let batch = 0; batch < SYNC_BATCHES_PER_RUN; batch += 1) {
+      const page = await connectorRequest(env, { action: "readRows", spreadsheetId: source.spreadsheet_id, tabName: source.tab_name, startRow: cursor, limit: SYNC_BATCH_SIZE });
       const rows = Array.isArray(page.rows) ? page.rows : [];
       totalRows = Math.max(0, Number(page.totalRows || 0) - 1);
       const batchStats = await importMappedRows(env, source, rows, mapping);
@@ -358,19 +388,28 @@ export async function runSourceSync(env, sourceId, jobId, fullRefresh = false) {
         eta,
         message: `${stats.successful} synced · ${stats.failed} failed · ${stats.duplicatesWithinSource + stats.duplicatesCentral} duplicates merged`,
       }, stats);
+      const progressCounts = await env.DB.prepare(`SELECT COUNT(*) AS synced,
+        SUM(CASE WHEN duplicate_kind <> '' THEN 1 ELSE 0 END) AS duplicates FROM source_records WHERE source_id = ?`).bind(sourceId).first();
+      await env.DB.batch([
+        env.DB.prepare(`UPDATE sources SET status=?, connected=1, total_rows=?, synced_rows=?, failed_rows=?, duplicate_rows=?, last_sync=CURRENT_TIMESTAMP WHERE id=?`)
+          .bind(page.done ? "Connected" : "Syncing", totalRows, Number(progressCounts?.synced) || 0, stats.failed, Number(progressCounts?.duplicates) || 0, sourceId),
+        env.DB.prepare("UPDATE source_connections SET last_cursor=?, last_row_count=?, last_error='', updated_at=CURRENT_TIMESTAMP WHERE source_id=?")
+          .bind(cursor, totalRows, sourceId),
+      ]);
       if (page.done || !rows.length) break;
     }
 
     if (!sourceComplete) {
       const processed = Math.min(totalRows, Math.max(0, cursor - 2));
       await persistJob(env, jobId, {
-        status: "Complete",
-        stage: "Batch window complete",
+        status: "Queued",
+        stage: "Continuing in background",
         processed,
         total: totalRows,
-        eta: 0,
+        eta: 60,
         message: `${stats.successful} synced in this run · remaining rows continue in the next background sync`,
       }, stats);
+      return;
     }
 
     const recordCounts = await env.DB.prepare(`SELECT COUNT(*) AS synced,

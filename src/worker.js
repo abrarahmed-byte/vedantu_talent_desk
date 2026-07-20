@@ -192,9 +192,17 @@ async function previewSource(request, env, user) {
 async function startSourceSync(env, sourceId, actor, ctx, fullRefresh = false) {
   const source = await env.DB.prepare("SELECT id, label FROM sources WHERE id = ?").bind(sourceId).first();
   if (!source) throw new AuthError("Hiring source not found", 404);
-  const activeJob = await env.DB.prepare("SELECT id FROM sync_jobs WHERE source_id = ? AND status IN ('Queued', 'Running') ORDER BY updated_at DESC LIMIT 1")
+  const activeJob = await env.DB.prepare(`SELECT id, status,
+    CAST(unixepoch('now') - unixepoch(updated_at) AS INTEGER) AS age_seconds
+    FROM sync_jobs WHERE source_id = ? AND status IN ('Queued', 'Running') ORDER BY updated_at DESC LIMIT 1`)
     .bind(sourceId).first();
-  if (activeJob?.id) return activeJob.id;
+  if (activeJob?.id) {
+    if (activeJob.status === "Running" && Number(activeJob.age_seconds || 0) < 20) return activeJob.id;
+    const resumedWork = runSourceSync(env, sourceId, activeJob.id, false, true);
+    if (ctx?.waitUntil) ctx.waitUntil(resumedWork);
+    else await resumedWork;
+    return activeJob.id;
+  }
   const jobId = crypto.randomUUID();
   await env.DB.batch([
     env.DB.prepare(`INSERT INTO sync_jobs(id, source_id, status, stage, processed_rows, total_rows, eta_seconds, message)
@@ -305,7 +313,12 @@ export default {
     }
   },
   async scheduled(_event, env, ctx) {
-    const sources = await env.DB.prepare("SELECT id FROM sources WHERE connected=1 AND id IN (SELECT source_id FROM source_connections) ORDER BY last_sync LIMIT 3").all();
+    const sources = await env.DB.prepare(`SELECT id FROM sources
+      WHERE connected=1 AND id IN (SELECT source_id FROM source_connections)
+      AND (last_sync <= datetime('now', '-15 minutes') OR EXISTS (
+        SELECT 1 FROM sync_jobs WHERE source_id=sources.id AND status IN ('Queued', 'Running')
+      ))
+      ORDER BY CASE WHEN status='Syncing' THEN 0 ELSE 1 END, last_sync LIMIT 3`).all();
     for (const source of sources.results || []) await startSourceSync(env, source.id, "System", ctx, false);
   },
 };
