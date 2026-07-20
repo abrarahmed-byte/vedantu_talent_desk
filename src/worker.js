@@ -26,6 +26,7 @@ function list(value) {
 async function repositoryFilters(env) {
   const [subjects, languages, workModes] = await Promise.all([
     env.DB.prepare(`SELECT subject_display AS value FROM candidates WHERE trim(subject_display) <> ''
+      UNION SELECT grades_display AS value FROM candidates WHERE track='Teacher' AND trim(grades_display) <> ''
       UNION SELECT role AS value FROM candidates WHERE track='Non-teaching' AND trim(role) <> ''`).all(),
     env.DB.prepare("SELECT DISTINCT languages_display AS value FROM candidates WHERE trim(languages_display) <> ''").all(),
     env.DB.prepare("SELECT DISTINCT work_mode AS value FROM candidates WHERE trim(work_mode) <> ''").all(),
