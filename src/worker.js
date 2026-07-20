@@ -103,7 +103,7 @@ async function getCandidateHistory(candidateId, env) {
   const candidate = await env.DB.prepare("SELECT * FROM candidates WHERE id = ?").bind(candidateId).first();
   if (!candidate) return json({ error: "Candidate not found" }, 404);
   const [activity, calls] = await Promise.all([
-    env.DB.prepare("SELECT * FROM activity_logs WHERE candidate_id = ? ORDER BY created_at DESC LIMIT 50").bind(candidateId).all(),
+    env.DB.prepare("SELECT * FROM activity_logs WHERE candidate_id = ? AND action <> 'called' ORDER BY created_at DESC LIMIT 50").bind(candidateId).all(),
     env.DB.prepare("SELECT * FROM calls WHERE candidate_id = ? ORDER BY created_at DESC LIMIT 30").bind(candidateId).all(),
   ]);
   return json({ candidate: candidateResponse(candidate, 0), activity: activity.results || [], calls: calls.results || [] });
