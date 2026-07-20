@@ -6,8 +6,8 @@
     <meta name="description" content="Vedantu Talent Desk zero-cost Cloudflare pilot">
     <meta name="robots" content="noindex,nofollow">
     <title>Vedantu Talent Desk · Zero-cost pilot</title>
-    <link rel="stylesheet" href="/styles.css?v=20260720-2">
-    <script src="/app.js?v=20260720-2" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=20260720-3">
+    <script src="/app.js?v=20260720-3" defer></script>
   </head>
   <body>
     <div class="pilot-ribbon"><b id="pilotRibbonTitle">ZERO-COST PILOT</b><span id="pilotRibbonText">Fictional profiles only · no real recruitment data</span></div>
@@ -21,6 +21,7 @@
           <button class="nav-item active" data-page-link="discover"><span>⌕</span><b>Discover</b><em id="navCandidateCount">0</em></button>
           <button class="nav-item" data-page-link="sources"><span>▦</span><b>Sources</b><em id="navSourceCount">0</em></button>
           <button class="nav-item" data-page-link="activity"><span>◴</span><b>Activity</b><em id="navActivityCount">0</em></button>
+          <button class="nav-item hidden" id="superadminNav" data-page-link="superadmin"><span>★</span><b>Superadmin</b><em>Master</em></button>
         </nav>
         <section class="health-card" aria-label="Pilot health">
           <div><span>Database status</span><b><i></i> Connected</b></div>
@@ -39,21 +40,21 @@
 
         <section class="page active" id="page-discover">
           <section class="hero">
-            <div><p class="kicker">Faster candidate discovery</p><h1>Find the right profile,<br><span>without waiting on Sheets.</span></h1><p>Indexed search from the central D1 repository. Newer applications break relevance ties.</p></div>
-            <div class="hero-stat"><span>Searchable profiles</span><strong id="heroProfiles">—</strong><small id="heroRecordLabel">fictional pilot records</small><p><i></i> No paid AI call</p></div>
+            <div><p class="kicker">Your central talent workspace</p><h1>Welcome, <span id="heroUserName">team.</span></h1><p>Search every connected profile, review résumé evidence and pick up where your recruiting team left off.</p></div>
+            <div class="hero-stat"><span>Searchable profiles</span><strong id="heroProfiles">—</strong><small id="heroRecordLabel">central repository records</small><div class="hero-workforce"><p><b id="heroActiveEmployees">—</b> active list</p><p><b id="heroFormerEmployees">—</b> inactive list</p></div></div>
             <i class="orbit one"></i><i class="orbit two"></i>
           </section>
 
           <div class="track-tabs" role="tablist" aria-label="Candidate type">
-            <button class="active" data-track="Teacher">Teachers</button>
+            <button data-track="Teacher">Teachers</button>
             <button data-track="Non-teaching">Non-teaching</button>
-            <button data-track="All">All profiles</button>
-            <p>Teaching fit uses subject, level, board, language, experience and freshness.</p>
+            <button class="active" data-track="All">All profiles</button>
+            <p>Résumé recommendations drive profile type after AI review; source categories remain visible for audit.</p>
           </div>
 
           <section class="search-panel">
             <label for="searchInput">What does the ideal profile look like?</label>
-            <div class="search-box"><span>⌕</span><input id="searchInput" value="Maths teacher for grades 9–12 in Bangalore who speaks Hindi" autocomplete="off"><button id="searchButton" class="primary-button">Find matches →</button></div>
+            <div class="search-box"><span>⌕</span><input id="searchInput" placeholder="Try: JEE Physics teacher with 5+ years of classroom experience" autocomplete="off"><button id="searchButton" class="primary-button">Find matches →</button></div>
             <div class="filter-grid">
               <label><span>Subject / function</span><select id="subjectFilter"><option>All subjects</option><option>Mathematics</option><option>Physics</option><option>English</option><option>Academic Operations</option><option>Performance Marketing</option></select></label>
               <label><span>Language</span><select id="languageFilter"><option>All languages</option><option>English</option><option>Hindi</option><option>Malayalam</option><option>Urdu</option><option>Marathi</option><option>Gujarati</option></select></label>
@@ -86,7 +87,7 @@
           <div class="source-grid" id="employmentSourceGrid"></div>
           <div class="section-heading"><div><h2>Background jobs</h2><p>Every import exposes its current stage, progress and ETA.</p></div></div>
           <div class="jobs" id="jobList"></div>
-          <div class="section-heading"><div><h2>AI résumé evidence</h2><p>Application claims and résumé evidence are reconciled in discounted background batches.</p></div><button class="primary-button" id="startAiPilot">Start 20-profile pilot</button></div>
+          <div class="section-heading"><div><h2>AI résumé evidence</h2><p>Application claims, résumé evidence and profile-type recommendations are processed in discounted background batches.</p></div><button class="primary-button" id="startAiPilot">Classify next 20 profiles</button></div>
           <div class="ai-pipeline" id="aiPipeline"><div class="loading-card"></div></div>
           <div class="section-heading"><div><h2>Workspace access</h2><p>Admins manage sources and users. Recruiters can discover profiles and record calls.</p></div><button class="outline-button" id="addRecruiter">Add team member</button></div>
           <div class="access-list" id="accessList"></div>
@@ -95,6 +96,16 @@
         <section class="page" id="page-activity">
           <div class="page-title"><div><p class="kicker">Recruiter audit trail</p><h1>Profile activity</h1><p>Searches, views, resume previews, calls and synchronizations are timestamped in D1.</p></div><button class="outline-button" id="refreshActivity">Refresh log</button></div>
           <div class="activity-layout"><section class="activity-panel" id="activityList"></section><aside class="activity-summary"><h3>Pilot usage</h3><strong id="activityViews">—</strong><span>profile views</span><div><p><b id="activityCalls">—</b><small>calls logged</small></p><p><b id="activityProfiles">—</b><small>profiles</small></p></div><p class="safe-note" id="activitySafeNote"><i></i>This environment contains fictional data only.</p></aside></div>
+        </section>
+
+        <section class="page" id="page-superadmin">
+          <div class="page-title"><div><p class="kicker">Restricted master access</p><h1>Superadmin control centre</h1><p>Edit canonical records, inspect original rows, export data and review team usage. Every change and download is audited.</p></div><button class="outline-button" id="refreshSuperadmin">Refresh reports</button></div>
+          <div class="superadmin-metrics" id="superadminMetrics"><div class="loading-card"></div></div>
+          <section class="admin-panel export-panel"><div><h2>Master exports</h2><p>Download a current CSV snapshot. Source Sheets are never modified by an export.</p></div><div class="export-actions"><button data-admin-export="candidates">Candidate repository</button><button data-admin-export="raw">Original source rows</button><button data-admin-export="employment">Active & former lists</button><button data-admin-export="usage">User usage</button><button data-admin-export="sources">Source report</button></div></section>
+          <div class="admin-layout">
+            <section class="admin-panel admin-records"><header><div><h2>Canonical and row-level data</h2><p>Open any profile to edit standardized fields and inspect every original source row.</p></div><div class="admin-search"><input id="superadminSearch" placeholder="Name, email, phone, role or source"><button class="outline-button" id="runSuperadminSearch">Search</button></div></header><div class="admin-table-wrap"><table><thead><tr><th>Candidate</th><th>Profile type</th><th>Employment</th><th>Source</th><th>Usage</th><th></th></tr></thead><tbody id="superadminRows"></tbody></table></div><footer id="superadminPager"></footer></section>
+            <aside class="admin-stack"><section class="admin-panel"><h2>User usage</h2><p>Searches, profile views, résumé opens and calls.</p><div id="superadminUsage" class="usage-list"></div></section><section class="admin-panel"><h2>Source and AI reports</h2><div id="superadminReports" class="report-list"></div></section></aside>
+          </div>
         </section>
       </main>
     </div>
@@ -147,8 +158,24 @@
         <p class="kicker">Admin · Workspace access</p><h2>Add a team member</h2><p>Use their Vedantu email address.</p>
         <label>Full name<input id="accessName" required placeholder="Recruiter name"></label>
         <label>Vedantu email<input id="accessEmail" type="email" required placeholder="name@vedantu.com"></label>
-        <label>Access level<select id="accessRole"><option>Recruiter</option><option>Admin</option></select></label>
+        <label>Access level<select id="accessRole"><option>Recruiter</option><option>Admin</option><option id="superadminRoleOption" class="hidden">Superadmin</option></select></label>
         <button class="primary-button full" type="submit">Give access</button>
+      </form>
+    </div>
+
+    <div class="modal-backdrop hidden" id="superadminEditBackdrop">
+      <form class="source-modal superadmin-editor" id="superadminEditForm">
+        <button type="button" class="modal-close" data-close-superadmin aria-label="Close Superadmin editor">×</button>
+        <p class="kicker">Superadmin · Canonical record</p><h2 id="superadminEditTitle">Edit candidate</h2><p id="superadminEditIdentity"></p>
+        <input type="hidden" id="superadminCandidateId">
+        <div class="form-grid two"><label>Full name<input id="superEditName" required maxlength="200"></label><label>Source category<select id="superEditTrack"><option>Teacher</option><option>Non-teaching</option></select></label></div>
+        <div class="form-grid two"><label>Role<input id="superEditRole" maxlength="240"></label><label>Experience in months<input id="superEditExperience" type="number" min="0" max="1000"></label></div>
+        <div class="form-grid two"><label>City<input id="superEditCity" maxlength="160"></label><label>State<input id="superEditState" maxlength="160"></label></div>
+        <label>Subjects / functions<input id="superEditSubjects" maxlength="600"></label>
+        <div class="form-grid two"><label>Grades / levels<input id="superEditGrades" maxlength="600"></label><label>Boards<input id="superEditBoards" maxlength="600"></label></div>
+        <div class="form-grid two"><label>Languages<input id="superEditLanguages" maxlength="600"></label><label>Work mode<input id="superEditWorkMode" maxlength="160"></label></div>
+        <section class="raw-row-section"><h3>Original source rows</h3><p>Read-only evidence from connected Sheets. Canonical edits do not overwrite the source Sheet.</p><div id="superadminRawRows"></div></section>
+        <div class="modal-actions"><button class="primary-button" type="submit">Save audited changes</button></div>
       </form>
     </div>
 

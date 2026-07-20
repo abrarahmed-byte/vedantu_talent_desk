@@ -1,7 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const state = {
   page: "discover",
-  track: "Teacher",
+  track: "All",
   candidates: [],
   meta: null,
   selected: null,
@@ -11,6 +11,8 @@ const state = {
   sourceMode: "candidate",
   syncPoller: null,
   syncKickInFlight: false,
+  superadmin: null,
+  superadminPage: 1,
 };
 
 function escapeHtml(value) {
@@ -73,10 +75,14 @@ async function loadSession() {
   state.session = await api("/api/session");
   populateRepositoryFilters();
   const user = state.session.user || {};
+  const firstName = String(user.displayName || "team").trim().split(/\s+/)[0] || "team";
+  $("heroUserName").textContent = `${firstName}.`;
   $("signedUserInitials").textContent = initials(user.displayName);
   $("signedUserName").textContent = user.displayName || "Talent Desk user";
   $("signedUserRole").textContent = `${user.role || "Recruiter"} · ${user.protected ? "Vedantu workspace" : "fictional pilot"}`;
   $("topbarRole").textContent = user.protected ? user.role : `${user.role || "Admin"} pilot`;
+  $("superadminNav").classList.toggle("hidden", !state.session.isSuperadmin);
+  $("superadminRoleOption").classList.toggle("hidden", !state.session.isSuperadmin);
   if (user.protected) {
     $("pilotRibbonTitle").textContent = "VEDANTU PRIVATE PILOT";
     $("pilotRibbonText").textContent = "Access-controlled workspace · recruitment data stays inside approved accounts";
@@ -111,11 +117,13 @@ function toast(message) {
 }
 
 function showPage(page) {
+  if (page === "superadmin" && !state.session?.isSuperadmin) return;
   state.page = page;
   document.querySelectorAll(".page").forEach((element) => element.classList.toggle("active", element.id === `page-${page}`));
   document.querySelectorAll("[data-page-link]").forEach((button) => button.classList.toggle("active", button.dataset.pageLink === page));
   window.scrollTo({ top: 0, behavior: "smooth" });
   if (page !== "discover") loadMeta();
+  if (page === "superadmin") loadSuperadmin();
 }
 
 function employmentClass(value) {
@@ -125,11 +133,23 @@ function employmentClass(value) {
 }
 
 function aiBadge(candidate) {
-  if (candidate.ai_status !== "completed" || !candidate.ai_profile) return "";
+  if (candidate.ai_status !== "completed" || !candidate.ai_profile) return `<span class="ai-badge pending">AI type pending</span>`;
   const facts = candidate.ai_profile.facts || [];
   const supported = facts.filter((fact) => fact.resume_status === "supported").length;
   const claims = facts.filter((fact) => fact.resume_status === "claim_only").length;
   return `<span class="ai-badge verified">✦ ${supported} resume-backed</span>${claims ? `<span class="ai-badge claim">${claims} claim-only</span>` : ""}`;
+}
+
+function profileTypeInfo(candidate) {
+  const recommendation = candidate.recommended_track || "";
+  const effective = candidate.effective_track || candidate.track || "Unclear";
+  const confidence = Math.round((Number(candidate.classification_confidence) || 0) * 100);
+  const reviewed = candidate.ai_status === "completed" && recommendation;
+  const label = reviewed
+    ? recommendation === "Unclear" ? `AI: unclear${confidence ? ` · ${confidence}%` : ""}` : `AI: ${recommendation}${confidence ? ` · ${confidence}%` : ""}`
+    : "Awaiting AI classification";
+  const css = reviewed ? recommendation.toLowerCase().replace(/\s+/g, "-") : "pending";
+  return { recommendation, effective, confidence, reviewed, label, css };
 }
 
 function renderCandidates() {
@@ -140,12 +160,12 @@ function renderCandidates() {
     return;
   }
   list.innerHTML = state.candidates.map((candidate) => {
-    const trackClass = candidate.track.toLowerCase().replace(/\s+/g, "-");
+    const profileType = profileTypeInfo(candidate);
     const experience = `${candidate.experience_months || 0} months experience`;
     const hires = Number(candidate.employment_times_hired) ? ` · hired ${candidate.employment_times_hired} time(s)` : "";
     return `<article class="candidate-card">
       <div class="identity">
-        <span class="avatar large ${candidate.track === "Teacher" ? "orange" : "purple"}">${escapeHtml(candidate.initials)}</span>
+        <span class="avatar large ${profileType.effective === "Teacher" ? "orange" : "purple"}">${escapeHtml(candidate.initials)}</span>
         <button data-open-profile="${escapeHtml(candidate.id)}">
           <b>${escapeHtml(candidate.name)}</b>
           <span>${escapeHtml([candidate.city, candidate.state].filter(Boolean).join(", "))} · ${escapeHtml(candidate.phone)}</span>
@@ -153,9 +173,9 @@ function renderCandidates() {
         </button>
       </div>
       <div class="profile-fit">
-        <div class="profile-labels"><span class="track-pill ${trackClass}">${escapeHtml(candidate.track)}</span>${aiBadge(candidate)}</div>
+        <div class="profile-labels"><span class="track-pill ${escapeHtml(profileType.css)}">${escapeHtml(profileType.label)}</span>${aiBadge(candidate)}</div>
         <b>${escapeHtml(candidate.subject_display || candidate.role)}</b>
-        <span>${candidate.track === "Teacher" ? "Grades / levels: " : "Focus: "}${escapeHtml(candidate.grades_display || candidate.role)}</span>
+        <span>${profileType.effective === "Teacher" ? "Grades / levels: " : "Focus: "}${escapeHtml(candidate.grades_display || candidate.role)}</span>
         <em class="employment-pill ${employmentClass(candidate.employment_status)}">${escapeHtml(candidate.employment_status)}${escapeHtml(hires)}</em>
       </div>
       <div class="engagement">
@@ -189,8 +209,11 @@ async function runSearch(logSearch = true) {
     renderCandidates();
     $("resultSummary").textContent = `${result.total} matches · ${result.mode}`;
     $("latency").textContent = `Results in ${result.responseTimeMs} ms`;
-    $("understood").classList.add("show");
-    $("understood").querySelector("p").textContent = `Understood as: ${result.understoodAs}`;
+    const hasSearchContext = Boolean($("searchInput").value.trim()) || state.track !== "All"
+      || $("subjectFilter").value !== "All subjects" || $("languageFilter").value !== "All languages"
+      || $("experienceFilter").value !== "0" || $("workModeFilter").value !== "Any work mode";
+    $("understood").classList.toggle("show", hasSearchContext);
+    if (hasSearchContext) $("understood").querySelector("p").textContent = `Understood as: ${result.understoodAs}`;
     if (logSearch && $("searchInput").value.trim()) api("/api/searches", { method: "POST", body: JSON.stringify({ query: $("searchInput").value.trim() }) }).catch(() => {});
   } catch (error) {
     $("candidateList").innerHTML = `<div class="empty-state"><h3>The pilot database could not be reached</h3><p>${escapeHtml(error.message)}</p></div>`;
@@ -230,14 +253,21 @@ function additionalFacts(candidate) {
 
 function aiEvidenceSection(candidate) {
   const profile = candidate.ai_profile;
-  if (!profile) return `<section class="drawer-section ai-evidence"><div class="evidence-heading"><div><h3>Résumé evidence check</h3><p>Not processed yet. Form selections remain candidate-provided claims.</p></div><span class="ai-badge pending">Awaiting AI</span></div></section>`;
+  if (!profile?.profile_classification) return `<section class="drawer-section ai-evidence"><div class="evidence-heading"><div><h3>Résumé profile recommendation</h3><p>Not processed with the latest classification model. The source category remains visible but is not treated as résumé-verified.</p></div><span class="ai-badge pending">Awaiting AI</span></div></section>`;
+  const classification = profile.profile_classification;
+  const confidence = Math.round((Number(classification.confidence) || 0) * 100);
+  const classificationCss = String(classification.recommended_track || "Unclear").toLowerCase().replace(/\s+/g, "-");
+  const classificationEvidence = (classification.evidence || []).slice(0, 3).map((item) => `<p>“${escapeHtml(item.quote)}”${item.page ? ` · page ${escapeHtml(item.page)}` : ""}</p>`).join("");
+  const comparison = candidate.classification_disagrees
+    ? `Differs from source category: ${escapeHtml(candidate.track)}`
+    : `Source category: ${escapeHtml(candidate.track)}${classification.recommended_track === "Unclear" ? " · human review needed" : ""}`;
   const facts = (profile.facts || []).filter((item) => ["subject", "exam", "grade", "board", "language", "role", "qualification", "college"].includes(item.category));
   const items = facts.slice(0, 24).map((item) => {
     const status = item.resume_status === "supported" ? "Resume-backed" : item.resume_status === "contradicted" ? "Conflict" : "Claim only";
     const evidence = (item.evidence || [])[0];
     return `<article class="evidence-row ${escapeHtml(item.resume_status)}"><div><small>${escapeHtml(item.category)}</small><b>${escapeHtml(item.value)}</b>${evidence?.quote ? `<p>“${escapeHtml(evidence.quote)}”${evidence.page ? ` · page ${escapeHtml(evidence.page)}` : ""}</p>` : ""}</div><span>${escapeHtml(status)}</span></article>`;
   }).join("");
-  return `<section class="drawer-section ai-evidence"><div class="evidence-heading"><div><h3>Résumé evidence check</h3><p>${escapeHtml(candidate.ai_summary || profile.summary || "Application claims reconciled with the résumé.")}</p></div><span class="ai-badge verified">AI processed</span></div><div class="evidence-list">${items || "<p>No teaching evidence was extracted.</p>"}</div><p class="evidence-note">“Claim only” means the résumé did not evidence the form selection; it does not prove the claim is false. Review evidence before making a hiring decision.</p></section>`;
+  return `<section class="drawer-section ai-evidence"><div class="classification-card ${escapeHtml(classificationCss)}"><div><small>AI résumé recommendation</small><h3>${escapeHtml(classification.recommended_track)} profile</h3><p>${escapeHtml(classification.rationale)}</p>${classificationEvidence}</div><strong>${confidence}%<small>confidence</small></strong><span>${comparison}</span></div><div class="evidence-heading"><div><h3>Résumé evidence check</h3><p>${escapeHtml(candidate.ai_summary || profile.summary || "Application claims reconciled with the résumé.")}</p></div><span class="ai-badge verified">AI processed</span></div><div class="evidence-list">${items || "<p>No material evidence was extracted.</p>"}</div><p class="evidence-note">“Claim only” means the résumé did not evidence the form selection; it does not prove the claim is false. AI profile type is a routing recommendation and must not be used as the sole hiring decision.</p></section>`;
 }
 
 function historyEntry(entry) {
@@ -256,14 +286,15 @@ async function openCandidate(candidateId, focus = "profile") {
     const candidate = result.candidate;
     candidate.match_percent = state.candidates.find((item) => item.id === candidateId)?.match_percent || 85;
     state.selected = candidate;
+    const profileType = profileTypeInfo(candidate);
     $("drawerName").textContent = candidate.name;
     const activity = [...(result.activity || []), ...(result.calls || []).map((call) => ({ ...call, action: "called", actor: call.recruiter, detail: `${call.outcome} · ${call.role}${call.note ? ` · ${call.note}` : ""}` }))]
       .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     $("drawerContent").innerHTML = `
-      <div class="drawer-hero"><span class="avatar xlarge ${candidate.track === "Teacher" ? "orange" : "purple"}">${escapeHtml(candidate.initials)}</span><div><h2>${escapeHtml(candidate.name)}</h2><p>${escapeHtml(candidate.role)}</p><small>${escapeHtml(candidate.city)}, ${escapeHtml(candidate.state)} · ${escapeHtml(candidate.work_mode)}</small></div><div class="drawer-score"><b>${candidate.match_percent}%</b><span>pilot match</span></div></div>
+      <div class="drawer-hero"><span class="avatar xlarge ${profileType.effective === "Teacher" ? "orange" : "purple"}">${escapeHtml(candidate.initials)}</span><div><h2>${escapeHtml(candidate.name)}</h2><p>${escapeHtml(candidate.role)}</p><small>${escapeHtml(candidate.city)}, ${escapeHtml(candidate.state)} · ${escapeHtml(candidate.work_mode)}</small></div><div class="drawer-score"><b>${candidate.match_percent}%</b><span>pilot match</span></div></div>
       <div class="drawer-actions"><button class="primary-button" id="drawerResume">Resume preview</button><button class="outline-button" id="drawerCall">I called this profile</button><button class="outline-button" id="drawerHistory">View Log History</button></div>
       <section class="drawer-section"><h3>Candidate information</h3><div class="fact-grid">${fact("Applied", formatDate(candidate.applied_at, true))}${fact("Location", `${candidate.city}, ${candidate.state}`)}${fact("Phone", candidate.phone)}${fact("Email", candidate.email)}${fact("Source Sheet", candidate.source_sheet)}${fact("Work mode", candidate.work_mode)}</div></section>
-      <section class="drawer-section"><h3>${candidate.track === "Teacher" ? "Teaching profile" : "Professional profile"}</h3><div class="fact-grid">${fact("Subject / function", candidate.subject_display)}${fact("Grades / levels", candidate.grades_display)}${fact("Boards", candidate.boards_display || "Not applicable")}${fact("Languages", candidate.languages_display)}${fact("Experience", `${candidate.experience_months} months`)}${fact("Education", `${candidate.education} · ${candidate.college}`)}</div></section>
+      <section class="drawer-section"><h3>${profileType.effective === "Teacher" ? "Teaching profile" : "Professional profile"}</h3><div class="fact-grid">${fact("AI profile recommendation", profileType.reviewed ? profileType.label : "Awaiting résumé classification")}${fact("Source category", candidate.track)}${fact("Subject / function", candidate.subject_display)}${fact("Grades / levels", candidate.grades_display)}${fact("Boards", candidate.boards_display || "Not applicable")}${fact("Languages", candidate.languages_display)}${fact("Experience", `${candidate.experience_months} months`)}${fact("Education", `${candidate.education} · ${candidate.college}`)}</div></section>
       ${aiEvidenceSection(candidate)}
       ${additionalFacts(candidate)}
       <section class="drawer-section"><h3>Employment and duplicate checks</h3><div class="fact-grid">${fact("Employment status", candidate.employment_status)}${fact("Times hired", candidate.employment_times_hired)}${fact("Duplicate source rows merged", candidate.duplicate_count)}${fact("Canonical identity", "Email / phone exact match")}</div></section>
@@ -333,10 +364,14 @@ function renderMeta() {
   const duplicates = Number(repository.duplicates) || 0;
   const views = Number(repository.views) || 0;
   const calls = Number(repository.calls) || 0;
+  const activeEmployees = Number(repository.active_employees) || 0;
+  const formerEmployees = Number(repository.former_employees) || 0;
   ["navCandidateCount", "healthProfiles", "heroProfiles", "metricProfiles", "activityProfiles"].forEach((id) => $(id).textContent = profiles);
   ["healthDuplicates", "metricDuplicates"].forEach((id) => $(id).textContent = duplicates);
   ["metricViews", "activityViews"].forEach((id) => $(id).textContent = views);
   ["metricCalls", "activityCalls"].forEach((id) => $(id).textContent = calls);
+  $("heroActiveEmployees").textContent = activeEmployees;
+  $("heroFormerEmployees").textContent = formerEmployees;
   $("navSourceCount").textContent = (state.meta.sources || []).length;
   $("navActivityCount").textContent = (state.meta.activity || []).length;
   const canManage = Boolean(state.session?.canManageSources);
@@ -346,7 +381,8 @@ function renderMeta() {
     const action = source.connected ? "disconnect" : "reconnect";
     const fourthValue = employmentSource ? Number(source.matched_rows) || 0 : Number(source.duplicate_rows) || 0;
     const fourthLabel = employmentSource ? "profiles matched" : "duplicates";
-    return `<article class="source-card"><header><h3>${escapeHtml(source.label)}</h3><span class="status-${escapeHtml(String(source.status).toLowerCase())}">● ${escapeHtml(source.status)}</span></header><p>${escapeHtml(source.kind)}${connectedSheet ? ` · ${escapeHtml(source.tab_name || "first tab")}` : " · fictional pilot connector"}</p><div class="source-stats"><div><b>${source.total_rows}</b><small>source rows</small></div><div><b>${source.synced_rows}</b><small>${employmentSource ? "checked" : "synced"}</small></div><div><b>${source.failed_rows}</b><small>failed</small></div><div><b>${fourthValue}</b><small>${fourthLabel}</small></div></div><footer><span>${source.connected ? "Connected" : "Disconnected"}</span><span>Last sync ${escapeHtml(formatDate(source.last_sync, true))}</span></footer>${connectedSheet && canManage ? `<div class="source-actions"><button class="text-button" data-source-action="sync" data-source-id="${escapeHtml(source.id)}">Sync now</button><button class="text-button" data-source-action="${action}" data-source-id="${escapeHtml(source.id)}">${action === "disconnect" ? "Disconnect" : "Reconnect"}</button></div>` : ""}${source.last_error ? `<p class="source-error">${escapeHtml(source.last_error)}</p>` : ""}</article>`;
+    const sheetLink = safeExternalUrl(source.sheet_url);
+    return `<article class="source-card"><header><h3>${escapeHtml(source.label)}</h3><span class="status-${escapeHtml(String(source.status).toLowerCase())}">● ${escapeHtml(source.status)}</span></header><p>${escapeHtml(source.kind)}${connectedSheet ? ` · ${escapeHtml(source.tab_name || "first tab")}` : " · fictional pilot connector"}</p>${sheetLink ? `<a class="source-sheet-link" href="${escapeHtml(sheetLink)}" title="${escapeHtml(sheetLink)}" target="_blank" rel="noopener">${escapeHtml(sheetLink)}</a>` : ""}<div class="source-stats"><div><b>${source.total_rows}</b><small>source rows</small></div><div><b>${source.synced_rows}</b><small>${employmentSource ? "checked" : "synced"}</small></div><div><b>${source.failed_rows}</b><small>failed</small></div><div><b>${fourthValue}</b><small>${fourthLabel}</small></div></div><footer><span>${source.connected ? "Connected" : "Disconnected"}</span><span>Last sync ${escapeHtml(formatDate(source.last_sync, true))}</span></footer>${connectedSheet && canManage ? `<div class="source-actions"><button class="text-button" data-source-action="sync" data-source-id="${escapeHtml(source.id)}">Sync now</button><button class="text-button" data-source-action="${action}" data-source-id="${escapeHtml(source.id)}">${action === "disconnect" ? "Disconnect" : "Reconnect"}</button></div>` : ""}${source.last_error ? `<p class="source-error">${escapeHtml(source.last_error)}</p>` : ""}</article>`;
   };
   const hiringSources = (state.meta.sources || []).filter((source) => source.kind !== "Employment master");
   const employmentSources = (state.meta.sources || []).filter((source) => source.kind === "Employment master");
@@ -364,10 +400,11 @@ function renderMeta() {
   const aiDone = (Number(aiCounts.completed) || 0) + (Number(aiCounts.failed) || 0);
   const aiPercent = aiTotal ? Math.round(aiDone / aiTotal * 100) : 0;
   const latestBatch = ai.latestBatch;
-  const aiStage = !ai.configured ? "Setup required" : Number(aiCounts.processing) ? "OpenAI batch processing" : Number(aiCounts.queued) ? "Preparing résumé files" : aiTotal ? "Pilot complete" : "Ready for pilot";
+  const aiStage = !ai.configured ? "Setup required" : Number(aiCounts.processing) ? "OpenAI batch processing" : Number(aiCounts.queued) ? "Preparing résumé files" : aiTotal ? "Ready for the next batch" : "Ready for classification";
   const aiEta = Number(aiCounts.processing) ? "Often faster, but allow up to 24 hours" : Number(aiCounts.queued) ? "Progress updates automatically every minute" : "Search remains instant while this runs";
-  $("aiPipeline").innerHTML = `<div class="ai-pipeline-copy"><span class="ai-orb">✦</span><div><b>${escapeHtml(aiStage)}</b><p>${ai.configured ? `${escapeHtml(ai.model)} · 50% Batch API discount · batches of up to ${escapeHtml(ai.batchSize)}` : "Add the OpenAI API key in Cloudflare. No key is sent to the browser."}</p><small>${escapeHtml(aiEta)}${latestBatch ? ` · latest batch: ${escapeHtml(String(latestBatch.status).replaceAll("_", " "))}` : ""}</small></div></div><div class="ai-progress"><div><span>Queued <b>${Number(aiCounts.queued) || 0}</b></span><span>Processing <b>${Number(aiCounts.processing) || 0}</b></span><span>Completed <b>${Number(aiCounts.completed) || 0}</b></span><span>Needs attention <b>${Number(aiCounts.failed) || 0}</b></span></div><div class="progress"><i style="width:${aiPercent}%"></i></div><small>${aiDone} of ${aiTotal || 0} profiles finished · ${aiPercent}%</small></div>`;
+  $("aiPipeline").innerHTML = `<div class="ai-pipeline-copy"><span class="ai-orb">✦</span><div><b>${escapeHtml(aiStage)}</b><p>${ai.configured ? `${escapeHtml(ai.model)} · 50% Batch API discount · up to ${escapeHtml(ai.batchSize)} profiles per batch` : "Add the OpenAI API key in Cloudflare. No key is sent to the browser."}</p><small>${escapeHtml(aiEta)}${latestBatch ? ` · latest batch: ${escapeHtml(String(latestBatch.status).replaceAll("_", " "))}` : ""}</small></div></div><div class="ai-progress"><div><span>Queued <b>${Number(aiCounts.queued) || 0}</b></span><span>Processing <b>${Number(aiCounts.processing) || 0}</b></span><span>Classified <b>${Number(aiCounts.completed) || 0}</b></span><span>Needs attention <b>${Number(aiCounts.failed) || 0}</b></span></div><div class="progress"><i style="width:${aiPercent}%"></i></div><small>${aiDone} of ${aiTotal || 0} profiles finished · ${aiPercent}%</small></div>`;
   $("startAiPilot").disabled = !canManage || !ai.configured || Number(aiCounts.queued) > 0 || Number(aiCounts.processing) > 0;
+  $("startAiPilot").textContent = "Classify next 20 profiles";
   $("accessList").innerHTML = (state.meta.users || []).map((user) => {
     const canRevoke = canManage && user.email !== state.session?.user?.email;
     return `<div class="access-row"><div><b>${escapeHtml(user.display_name)}</b><small>${escapeHtml(user.email)}</small></div><span class="role-pill">${escapeHtml(user.role)}</span><span>${user.active ? "Active" : "Disabled"}</span>${canRevoke ? `<button class="remove-access" data-revoke-user="${escapeHtml(user.email)}" data-revoke-name="${escapeHtml(user.display_name)}">Remove access</button>` : "<span></span>"}</div>`;
@@ -383,6 +420,110 @@ function renderMeta() {
 function renderActivity() {
   const actionCopy = { viewed: "viewed profile", resume_opened: "opened resume preview", called: "logged a call", searched: "searched", synced: "synchronized source", access_revoked: "revoked workspace access for" };
   $("activityList").innerHTML = (state.meta?.activity || []).map((entry) => `<div class="activity-row"><span class="avatar orange">${escapeHtml(initials(entry.actor))}</span><span class="event-icon ${escapeHtml(entry.action)}">${entry.action === "synced" ? "↻" : entry.action === "called" ? "☎" : entry.action === "searched" ? "⌕" : "◉"}</span><div><p><b>${escapeHtml(entry.actor)}</b> ${escapeHtml(actionCopy[entry.action] || entry.action)}${entry.candidate_name ? ` <b>${escapeHtml(entry.candidate_name)}</b>` : ""}</p><small>${escapeHtml(entry.detail)}</small></div><time>${escapeHtml(formatDate(entry.created_at, true))}</time></div>`).join("") || "<div class='empty-state'><h3>No activity yet</h3></div>";
+}
+
+function renderSuperadmin() {
+  if (!state.superadmin) return;
+  const data = state.superadmin;
+  const metrics = data.metrics || {};
+  const cards = [
+    ["Canonical profiles", metrics.profiles, "deduplicated applicants"],
+    ["Active list", metrics.active_rows, `${Number(metrics.active_profiles) || 0} matched profiles`],
+    ["Inactive / former list", metrics.former_rows, `${Number(metrics.former_profiles) || 0} matched profiles`],
+    ["Active users", metrics.active_users, "workspace access"],
+    ["Profile views", metrics.views, `${Number(metrics.resume_opens) || 0} résumé opens`],
+    ["Calls logged", metrics.calls, `${Number(metrics.duplicates) || 0} duplicates merged`],
+  ];
+  $("superadminMetrics").innerHTML = cards.map(([label, value, note]) => `<div><span>${escapeHtml(label)}</span><strong>${Number(value) || 0}</strong><small>${escapeHtml(note)}</small></div>`).join("");
+  $("superadminRows").innerHTML = (data.candidates || []).map((candidate) => {
+    const recommendation = candidate.recommended_track && candidate.recommended_track !== "Pending"
+      ? `${candidate.recommended_track} · ${Math.round((Number(candidate.classification_confidence) || 0) * 100)}%`
+      : `Pending · source says ${candidate.source_track}`;
+    return `<tr><td><b>${escapeHtml(candidate.name)}</b><small>${escapeHtml(candidate.email || candidate.phone)}</small><small>${escapeHtml([candidate.city, candidate.state].filter(Boolean).join(", "))}</small></td><td><b>${escapeHtml(recommendation)}</b><small>${escapeHtml(candidate.role || candidate.subject_display)}</small></td><td>${escapeHtml(candidate.employment_status)}</td><td><b>${escapeHtml(candidate.source_sheet)}</b><small>${escapeHtml(formatDate(candidate.applied_at))}</small></td><td>${Number(candidate.view_count) || 0} views<br>${Number(candidate.call_count) || 0} calls</td><td><button class="text-button" data-admin-edit="${escapeHtml(candidate.id)}">Open & edit</button></td></tr>`;
+  }).join("") || `<tr><td colspan="6">No matching records.</td></tr>`;
+  const totalPages = Math.max(1, Math.ceil((Number(data.total) || 0) / (Number(data.pageSize) || 50)));
+  $("superadminPager").innerHTML = `<span>Page ${Number(data.page) || 1} of ${totalPages} · ${Number(data.total) || 0} records</span><div><button class="outline-button" data-admin-page="${Math.max(1, Number(data.page) - 1)}" ${Number(data.page) <= 1 ? "disabled" : ""}>Previous</button><button class="outline-button" data-admin-page="${Math.min(totalPages, Number(data.page) + 1)}" ${Number(data.page) >= totalPages ? "disabled" : ""}>Next</button></div>`;
+  $("superadminUsage").innerHTML = (data.usage || []).map((entry) => `<article><div><b>${escapeHtml(entry.display_name)}</b><small>${escapeHtml(entry.identity)} · last active ${escapeHtml(formatDate(entry.last_active, true))}</small></div><span>${Number(entry.searches) || 0} searches · ${Number(entry.views) || 0} views · ${Number(entry.resume_opens) || 0} opens · ${Number(entry.calls) || 0} calls</span></article>`).join("") || "<p>No usage yet.</p>";
+  const classificationRows = (data.classifications || []).map((item) => `<span><b>${Number(item.count) || 0}</b>${escapeHtml(item.recommendation)}</span>`).join("");
+  const sourceRows = (data.sources || []).map((source) => `<article><div><b>${escapeHtml(source.label)}</b><small>${escapeHtml(source.kind)} · ${escapeHtml(source.status)}</small></div><span>${Number(source.synced_rows) || 0}/${Number(source.total_rows) || 0} synced · ${Number(source.failed_rows) || 0} failed</span></article>`).join("");
+  $("superadminReports").innerHTML = `<div class="classification-summary">${classificationRows || "<span><b>0</b>AI classifications</span>"}</div>${sourceRows || "<p>No sources connected.</p>"}`;
+  document.querySelectorAll("[data-admin-edit]").forEach((button) => button.onclick = () => openSuperadminEditor(button.dataset.adminEdit));
+  document.querySelectorAll("[data-admin-page]").forEach((button) => button.onclick = () => loadSuperadmin(Number(button.dataset.adminPage)));
+}
+
+async function loadSuperadmin(page = state.superadminPage || 1) {
+  if (!state.session?.isSuperadmin) return;
+  state.superadminPage = page;
+  try {
+    const query = $("superadminSearch").value.trim();
+    state.superadmin = await api(`/api/superadmin?page=${encodeURIComponent(page)}&q=${encodeURIComponent(query)}`);
+    renderSuperadmin();
+  } catch (error) { toast(error.message); }
+}
+
+async function openSuperadminEditor(candidateId) {
+  $("superadminEditBackdrop").classList.remove("hidden");
+  $("superadminEditTitle").textContent = "Loading candidate…";
+  $("superadminRawRows").innerHTML = `<div class="loading-card"></div>`;
+  try {
+    const result = await api(`/api/superadmin/candidates/${encodeURIComponent(candidateId)}`);
+    const candidate = result.candidate;
+    $("superadminCandidateId").value = candidate.id;
+    $("superadminEditTitle").textContent = candidate.name;
+    $("superadminEditIdentity").textContent = `${candidate.email || "No email"} · ${candidate.phone || "No phone"} · ${candidate.source_sheet}`;
+    $("superEditName").value = candidate.name || "";
+    $("superEditTrack").value = candidate.track || "Non-teaching";
+    $("superEditRole").value = candidate.role || "";
+    $("superEditExperience").value = Number(candidate.experience_months) || 0;
+    $("superEditCity").value = candidate.city || "";
+    $("superEditState").value = candidate.state || "";
+    $("superEditSubjects").value = candidate.subject_display || "";
+    $("superEditGrades").value = candidate.grades_display || "";
+    $("superEditBoards").value = candidate.boards_display || "";
+    $("superEditLanguages").value = candidate.languages_display || "";
+    $("superEditWorkMode").value = candidate.work_mode || "";
+    $("superadminRawRows").innerHTML = (result.rows || []).map((row) => {
+      let raw = row.raw_json || "{}";
+      try { raw = JSON.stringify(JSON.parse(raw), null, 2); } catch { raw = String(raw); }
+      return `<details><summary>${escapeHtml(row.source_label)} · row ${escapeHtml(row.source_row_key)}${row.duplicate_kind ? ` · ${escapeHtml(row.duplicate_kind)}` : ""}</summary><pre>${escapeHtml(raw)}</pre></details>`;
+    }).join("") || "<p>No original application rows are linked.</p>";
+  } catch (error) {
+    closeSuperadminEditor();
+    toast(error.message);
+  }
+}
+
+function closeSuperadminEditor() { $("superadminEditBackdrop").classList.add("hidden"); }
+
+async function saveSuperadminCandidate(event) {
+  event.preventDefault();
+  const candidateId = $("superadminCandidateId").value;
+  const button = event.currentTarget.querySelector("button[type=submit]");
+  button.disabled = true;
+  button.textContent = "Saving…";
+  try {
+    const result = await api(`/api/superadmin/candidates/${encodeURIComponent(candidateId)}`, { method: "POST", body: JSON.stringify({
+      name: $("superEditName").value, track: $("superEditTrack").value, role: $("superEditRole").value,
+      experience_months: $("superEditExperience").value, city: $("superEditCity").value, state: $("superEditState").value,
+      subject_display: $("superEditSubjects").value, grades_display: $("superEditGrades").value,
+      boards_display: $("superEditBoards").value, languages_display: $("superEditLanguages").value,
+      work_mode: $("superEditWorkMode").value,
+    }) });
+    closeSuperadminEditor();
+    toast(result.changed?.length ? `Saved ${result.changed.length} audited field changes` : "Record reviewed; no fields changed");
+    await Promise.all([loadSuperadmin(state.superadminPage), runSearch(false), loadMeta()]);
+  } catch (error) { toast(error.message); }
+  finally { button.disabled = false; button.textContent = "Save audited changes"; }
+}
+
+function downloadSuperadminReport(type) {
+  const link = document.createElement("a");
+  link.href = `/api/superadmin/export?type=${encodeURIComponent(type)}`;
+  link.download = "";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  toast("Preparing audited CSV export");
 }
 
 async function loadMeta() {
@@ -539,16 +680,16 @@ async function manageSource(sourceId, action) {
 }
 
 async function startAiPilot() {
-  if (!window.confirm("Start AI evidence extraction for up to 20 recent profiles? Their application rows and résumés will be sent to OpenAI in a discounted background batch.")) return;
+  if (!window.confirm("Classify the next 20 unprocessed profiles? Their application rows and résumés will be sent to OpenAI in a discounted background batch.")) return;
   const button = $("startAiPilot");
   button.disabled = true;
   button.textContent = "Queuing pilot…";
   try {
     const result = await api("/api/admin/ai/pilot", { method: "POST", body: JSON.stringify({ limit: 20 }) });
-    toast(result.queued ? `${result.queued} résumés queued · you can keep using Talent Desk` : result.message);
+    toast(result.queued ? `${result.queued} profiles queued for résumé classification · you can keep using Talent Desk` : result.message);
     await loadMeta();
   } catch (error) { toast(error.message); }
-  finally { button.textContent = "Start 20-profile pilot"; }
+  finally { button.textContent = "Classify next 20 profiles"; }
 }
 
 function openUserModal() {
@@ -598,6 +739,10 @@ $("includeClaims").addEventListener("change", () => runSearch(false));
 $("clearFilters").onclick = clearFilters;
 $("refreshMeta").onclick = () => loadMeta().then(() => toast("Pilot health refreshed"));
 $("refreshActivity").onclick = () => loadMeta().then(() => toast("Activity log refreshed"));
+$("refreshSuperadmin").onclick = () => loadSuperadmin(state.superadminPage).then(() => toast("Superadmin reports refreshed"));
+$("runSuperadminSearch").onclick = () => loadSuperadmin(1);
+$("superadminSearch").addEventListener("keydown", (event) => { if (event.key === "Enter") loadSuperadmin(1); });
+document.querySelectorAll("[data-admin-export]").forEach((button) => button.onclick = () => downloadSuperadminReport(button.dataset.adminExport));
 $("connectSource").onclick = () => openSourceModal("candidate");
 $("connectEmploymentSource").onclick = () => openSourceModal("employment");
 $("startAiPilot").onclick = startAiPilot;
@@ -609,16 +754,20 @@ document.querySelectorAll("[data-close-drawer]").forEach((button) => button.oncl
 document.querySelectorAll("[data-close-call]").forEach((button) => button.onclick = closeCallModal);
 document.querySelectorAll("[data-close-source]").forEach((button) => button.onclick = closeSourceModal);
 document.querySelectorAll("[data-close-user]").forEach((button) => button.onclick = closeUserModal);
+document.querySelectorAll("[data-close-superadmin]").forEach((button) => button.onclick = closeSuperadminEditor);
 $("profileBackdrop").addEventListener("mousedown", (event) => { if (event.target === event.currentTarget) closeDrawer(); });
 $("callBackdrop").addEventListener("mousedown", (event) => { if (event.target === event.currentTarget) closeCallModal(); });
 $("sourceBackdrop").addEventListener("mousedown", (event) => { if (event.target === event.currentTarget) closeSourceModal(); });
 $("userBackdrop").addEventListener("mousedown", (event) => { if (event.target === event.currentTarget) closeUserModal(); });
+$("superadminEditBackdrop").addEventListener("mousedown", (event) => { if (event.target === event.currentTarget) closeSuperadminEditor(); });
 $("callForm").addEventListener("submit", saveCall);
+$("superadminEditForm").addEventListener("submit", saveSuperadminCandidate);
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (!$("callBackdrop").classList.contains("hidden")) closeCallModal();
   else if (!$("sourceBackdrop").classList.contains("hidden")) closeSourceModal();
   else if (!$("userBackdrop").classList.contains("hidden")) closeUserModal();
+  else if (!$("superadminEditBackdrop").classList.contains("hidden")) closeSuperadminEditor();
   else if (!$("profileBackdrop").classList.contains("hidden")) closeDrawer();
 });
 

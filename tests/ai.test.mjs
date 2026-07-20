@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildBatchJsonl, extractResponseText, verificationForIntent } from "../src/ai.js";
+import { buildBatchJsonl, extractResponseText, profileClassification, verificationForIntent } from "../src/ai.js";
 
 test("batch lines use Responses, stored resume files and strict structured output", () => {
   const jsonl = buildBatchJsonl([{
@@ -17,6 +17,11 @@ test("batch lines use Responses, stored resume files and strict structured outpu
   assert.equal(request.body.store, false);
   assert.equal(request.body.text.format.type, "json_schema");
   assert.equal(request.body.text.format.strict, true);
+  assert.deepEqual(
+    request.body.text.format.schema.properties.profile_classification.properties.recommended_track.enum,
+    ["Teacher", "Non-teaching", "Unclear"],
+  );
+  assert.match(request.body.input[0].content[0].text, /resume text only/i);
   assert.equal(request.body.input[1].content[1].file_id, "file-resume-1");
   assert.equal(request.body.input[1].content[1].detail, "low");
 });
@@ -46,4 +51,18 @@ test("processed profiles accept resume-backed exam and subject evidence", () => 
 test("batch output text is extracted from the Responses output array", () => {
   const value = extractResponseText({ output: [{ content: [{ type: "output_text", text: "{\"facts\":[]}" }] }] });
   assert.equal(value, '{"facts":[]}');
+});
+
+test("resume classification remains separate from the source-sheet category", () => {
+  const classification = profileClassification({
+    profile_classification: {
+      recommended_track: "Non-teaching",
+      confidence: 0.91,
+      rationale: "The resume describes design work and no teaching history.",
+      evidence: [{ quote: "Product Designer", page: 1 }],
+    },
+  }, "Teacher");
+  assert.equal(classification.recommendedTrack, "Non-teaching");
+  assert.equal(classification.effectiveTrack, "Non-teaching");
+  assert.equal(classification.disagreesWithSource, true);
 });

@@ -1,61 +1,59 @@
-# Vedantu Talent Desk — zero-cost Cloudflare pilot
+# Vedantu Talent Desk
 
-This repository is a fake-data proof of concept for Cloudflare Workers, D1 and static assets. Private source connections are locked while `AUTH_MODE` is `pilot`; do not load real candidate information until Cloudflare Access and Vedantu's data approval are in place.
+A Cloudflare Workers and D1 candidate repository for Vedantu recruitment. Connected Google Sheets remain the source of truth; synchronized application rows, employment history, deduplicated candidate profiles, recruiter activity, and AI-extracted resume evidence live in D1 for fast searches.
 
-## Included
+## What is included
 
-- Vedantu-themed discovery, sources and activity pages
-- Six fictional canonical candidates and one merged duplicate
-- D1 FTS5 indexed search plus freshness ranking
-- Candidate cards with identity, contact, subject/function, grades, source, resume preview, interviewers, calls, views, history and match percentage
-- Persistent profile views, resume previews and call outcomes
-- Admin/Recruiter server authorization and server-attributed audit events
-- Admin source wizard with automatic column suggestions and manual mapping
-- Incremental background sync, progress, ETA and import/duplicate/failure reporting
-- Central email/phone identity matching, duplicate merging and profile updates
-- Repository, source, job and workspace-access metadata
-- A zero-cost Apps Script connector for private Google Sheets
-- No Interviews tab
-- Repository-driven filter dropdowns that stay current as Sheets sync
-- Optional résumé evidence reconciliation with OpenAI Batch API
-- Separate candidate claims, résumé-backed facts and direct conflicts
-- D1-only search after enrichment, with no paid AI call per search
+- Vedantu-themed Discover, Sources, Activity, and Superadmin pages
+- Natural-language search over the indexed D1 repository, with recent profiles favored after relevance
+- Candidate cards and drawers with contact details, source, resume, match score, views, callers, calls, and timestamped history
+- Google Sheet source wizard with automatic suggestions and manual column mapping
+- Incremental background sync with progress, ETA, imported/updated/merged/failed totals, and duplicate reporting
+- Active and former employee source matching
+- Repository-driven filter lists that update with synchronized data
+- Superadmin-only canonical record editor, original row inspection, user usage, operational reports, and CSV exports
+- Superadmin, Admin, and Recruiter authorization; only a Superadmin can grant Superadmin access
+- Persistent audit events attributed to the signed-in user's email
+- No Interviews tab; the candidate profile's activity thread holds recruiter calls and outcomes
 
-## Optional AI résumé evidence pilot
+## AI resume classification and evidence
 
-The AI workflow is deliberately asynchronous. An Admin starts a 20-profile pilot, the Worker reads each résumé through the private Apps Script connector, and OpenAI processes the requests through the discounted Batch API. Recruiters can continue searching and logging calls throughout the run.
+The asynchronous AI workflow processes up to 20 new profiles per batch. It reads the application row and resume together, saves structured facts and evidence to D1, and independently recommends **Teacher**, **Non-teaching**, or **Unclear** from resume evidence. The original source-sheet category remains available for comparison and audit.
 
-1. Apply `migrations/0005_ai_enrichment.sql` to D1.
-2. Update the deployed Apps Script web app with the current `google-apps-script/Code.gs` so the connector can securely read résumé files.
-3. Add `OPENAI_API_KEY` as an encrypted Cloudflare Worker secret. Optionally set `AI_MODEL`; the default is `gpt-5-nano`.
-4. Deploy the Worker, open **Sources**, and choose **Start 20-profile pilot**.
-5. Watch Queued, Processing, Completed and Needs attention counts in the AI résumé evidence panel.
+The recommendation is a routing aid, not a hiring decision. Teaching requires direct resume evidence such as instruction, tutoring, faculty work, lesson delivery, or student assessment. Subject knowledge or a selected form option alone is not enough. Unsupported form claims remain visible as `claim_only` rather than being treated as false.
 
-Temporary OpenAI résumé and batch files are deleted after the structured result is saved. D1 stores the canonical JSON, typed facts, evidence status and short evidence snippets. A form-only claim is saved as `claim_only`, not treated as false. Obtain Vedantu approval for sending candidate rows and résumés to OpenAI before enabling this on production recruitment data.
+1. Apply all D1 migrations, including `0005_ai_enrichment.sql` and `0006_superadmin.sql`.
+2. Deploy the current Apps Script connector so the Worker can securely read resume files.
+3. Add `OPENAI_API_KEY` as an encrypted Cloudflare Worker secret. `AI_MODEL` defaults to `gpt-5-nano`.
+4. Open **Sources** and select **Classify next 20 profiles**.
+5. Monitor queued, processing, classified, and needs-attention totals without blocking search or source sync.
 
-## First deployment
+OpenAI Batch files and temporary resume uploads are deleted after the structured result is stored. Obtain Vedantu approval before processing production candidate data with an external AI provider.
 
-1. Install Node.js 22 or newer.
-2. Run `npm install`.
-3. Run `npx wrangler login` and approve the Cloudflare sign-in in the browser.
-4. Confirm `wrangler.jsonc` contains the existing `vedantu_talent_desk_db` database identifier.
-5. Run `npm run db:remote` once. This creates the pilot tables and inserts only fictional profiles.
-6. Run `npm run deploy`.
-7. Open the `workers.dev` URL printed after deployment.
+## Roles
 
-The migration is safe to rerun. The fictional seed uses stable IDs and `INSERT OR IGNORE` so it does not duplicate profiles.
+- **Recruiter:** discover profiles, inspect history, and log calls.
+- **Admin:** Recruiter permissions plus connect and manage sources and workspace users.
+- **Superadmin:** Admin permissions plus master reporting, exports, raw source-row access, audited canonical edits, and Superadmin access management.
+
+The migration promotes `abrar.ahmed@vedantu.com` to the initial Superadmin and prevents removal of the final active Superadmin.
 
 ## Local validation
 
-Run `npm run db:local`, then `npm run dev`. Search and activity tests run with `npm test`.
+```text
+npm install
+npm run db:local
+npm test
+npm run dev
+```
 
-## Unlocking a fictional Google Sheet test
+## Deployment
 
-1. Protect the Worker with Cloudflare Access and allow only approved Vedantu email addresses.
-2. Apply all D1 migrations, including the source, access and identity tables.
-3. Deploy `google-apps-script/Code.gs` as a Web App executing as the Sheet-owning Admin.
-4. Save `APPS_SCRIPT_CONNECTOR_URL` as a Worker variable and `CONNECTOR_SECRET` as an encrypted Worker secret.
-5. Change `AUTH_MODE` to `cloudflare-access`; keep `ALLOW_PILOT_SOURCE_SYNC` false.
-6. Connect only the fictional test Sheet and verify the row, failure and duplicate totals.
+Apply D1 migrations before deploying code that depends on them:
 
-Before real candidate data, obtain Vedantu approval for Cloudflare storage, retention, deletion, export and audit requirements. Original resumes remain in Google Drive; D1 stores the standardized profile and the Drive link.
+```text
+npx wrangler d1 migrations apply vedantu_talent_desk_db --remote
+npx wrangler deploy
+```
+
+The current GitHub integration automatically deploys the `main` branch to Cloudflare. Original resumes stay in Google Drive; D1 stores the standardized profile, original source-row JSON, resume link, and structured AI evidence.

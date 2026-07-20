@@ -47,6 +47,12 @@ test("Recruiter cannot perform Admin actions", () => {
   assert.equal(roleAtLeast("Recruiter", "Recruiter"), true);
 });
 
+test("Superadmin inherits Admin access without granting Admin master access", () => {
+  assert.equal(roleAtLeast("Superadmin", "Admin"), true);
+  assert.equal(roleAtLeast("Superadmin", "Recruiter"), true);
+  assert.equal(roleAtLeast("Admin", "Superadmin"), false);
+});
+
 test("Cloudflare Access JWT is verified before its email is trusted", async (context) => {
   const fixture = await createAccessFixture();
   context.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ keys: [fixture.publicJwk] }), { status: 200 }));

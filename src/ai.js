@@ -1,7 +1,7 @@
 import { connectorRequest } from "./sync.js";
 
-export const AI_PROMPT_VERSION = "teacher-evidence-v1";
-export const AI_SCHEMA_VERSION = "candidate-evidence-v1";
+export const AI_PROMPT_VERSION = "resume-profile-classification-v2";
+export const AI_SCHEMA_VERSION = "candidate-evidence-v2";
 export const DEFAULT_AI_MODEL = "gpt-5-nano";
 
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
@@ -15,6 +15,28 @@ const EVIDENCE_SCHEMA = {
   properties: {
     schema_version: { type: "string" },
     summary: { type: "string" },
+    profile_classification: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        recommended_track: { type: "string", enum: ["Teacher", "Non-teaching", "Unclear"] },
+        confidence: { type: "number", minimum: 0, maximum: 1 },
+        rationale: { type: "string" },
+        evidence: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              quote: { type: "string" },
+              page: { type: "integer", minimum: 0 },
+            },
+            required: ["quote", "page"],
+          },
+        },
+      },
+      required: ["recommended_track", "confidence", "rationale", "evidence"],
+    },
     teaching_experience_months: { type: "integer", minimum: 0 },
     needs_human_review: { type: "boolean" },
     warnings: { type: "array", items: { type: "string" } },
@@ -79,13 +101,19 @@ const EVIDENCE_SCHEMA = {
       },
     },
   },
-  required: ["schema_version", "summary", "teaching_experience_months", "needs_human_review", "warnings", "facts", "employment_history", "education"],
+  required: ["schema_version", "summary", "profile_classification", "teaching_experience_months", "needs_human_review", "warnings", "facts", "employment_history", "education"],
 };
 
 const SYSTEM_PROMPT = `You reconcile a candidate's application form claims with evidence in their resume for a recruitment repository.
 
 Rules:
 - The form row contains candidate-provided claims. The resume is evidence, not necessarily a complete history.
+- Independently recommend Teacher, Non-teaching, or Unclear using resume text only. Do not use the form's profile type, subject selections, opportunity selections, or stated interest to make this classification.
+- Recommend Teacher only when the resume directly evidences teaching, tutoring, faculty work, classroom or online instruction, lesson delivery, student assessment, or comparable educator experience.
+- A degree, subject knowledge, software skills, exam preparation, or an interest in teaching is not teaching experience by itself.
+- Recommend Non-teaching when the resume primarily evidences functional work such as operations, sales, marketing, design, engineering, finance, HR, support, or product work and contains no clear teaching history.
+- Recommend Unclear when evidence is missing, ambiguous, or balanced. Keep classification confidence below 0.75 and set needs_human_review when unclear, low-confidence, or when the resume recommendation conflicts with the form-derived track.
+- Classification evidence must contain short exact quotes from the resume. A recommendation is a routing aid, not a hiring decision.
 - Use "supported" only when the resume directly supports the fact.
 - Use "claim_only" when the form claims it but the resume does not evidence it. Absence is not proof the claim is false.
 - Use "contradicted" only when the resume contains direct conflicting evidence. Explain the conflict in warnings.
@@ -173,8 +201,10 @@ export async function enqueueAiPilot(env, requestedLimit = MAX_PILOT_SIZE) {
   if (!env.OPENAI_API_KEY) throw new Error("Add the OpenAI API key in Cloudflare before starting the pilot");
   if (!env.APPS_SCRIPT_CONNECTOR_URL || !env.CONNECTOR_SECRET) throw new Error("The Google Drive connector is not configured");
   const limit = Math.min(MAX_PILOT_SIZE, Math.max(1, Math.round(Number(requestedLimit) || MAX_PILOT_SIZE)));
-  const rows = (await env.DB.prepare(`SELECT id, resume_url FROM candidates
-    WHERE trim(resume_url) <> '' ORDER BY applied_at DESC LIMIT ?`).bind(limit).all()).results || [];
+  const rows = (await env.DB.prepare(`SELECT c.id, c.resume_url FROM candidates c
+    WHERE trim(c.resume_url) <> '' AND NOT EXISTS (
+      SELECT 1 FROM ai_extraction_jobs j WHERE j.candidate_id=c.id AND j.prompt_version=?
+    ) ORDER BY c.applied_at DESC LIMIT ?`).bind(AI_PROMPT_VERSION, limit).all()).results || [];
   let queued = 0;
   for (const row of rows) {
     const dedupeKey = await sha256(`${row.id}|${row.resume_url}|${AI_PROMPT_VERSION}`);
@@ -445,4 +475,21 @@ export function verificationForIntent(canonicalJson, intent, includeClaims = fal
       && (fact.resume_status === "supported" || (includeClaims && fact.resume_status === "claim_only")),
   ));
   return { verified: satisfied, rejected: !satisfied };
+}
+
+export function profileClassification(canonicalJson, sourceTrack = "") {
+  let profile;
+  try { profile = typeof canonicalJson === "string" ? JSON.parse(canonicalJson || "{}") : canonicalJson || {}; } catch { profile = {}; }
+  const value = profile?.profile_classification || {};
+  const recommended = ["Teacher", "Non-teaching", "Unclear"].includes(value.recommended_track) ? value.recommended_track : "";
+  const confidence = Math.max(0, Math.min(1, Number(value.confidence) || 0));
+  const effectiveTrack = ["Teacher", "Non-teaching"].includes(recommended) ? recommended : sourceTrack;
+  return {
+    recommendedTrack: recommended,
+    effectiveTrack,
+    confidence,
+    rationale: compactString(value.rationale, 1000),
+    evidence: Array.isArray(value.evidence) ? value.evidence.slice(0, 6) : [],
+    disagreesWithSource: Boolean(recommended && recommended !== "Unclear" && sourceTrack && recommended !== sourceTrack),
+  };
 }

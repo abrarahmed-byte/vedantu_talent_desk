@@ -1,4 +1,4 @@
-const ROLE_LEVEL = { Recruiter: 1, Admin: 2 };
+const ROLE_LEVEL = { Recruiter: 1, Admin: 2, Superadmin: 3 };
 const JWKS_CACHE_TTL_MS = 60 * 60 * 1000;
 const jwksCache = new Map();
 
@@ -137,7 +137,7 @@ export function requireRole(user, role) {
 }
 
 export function canManageSources(user, env) {
-  return user?.role === "Admin" && (user.protected || String(env.ALLOW_PILOT_SOURCE_SYNC || "false") === "true");
+  return roleAtLeast(user?.role, "Admin") && (user.protected || String(env.ALLOW_PILOT_SOURCE_SYNC || "false") === "true");
 }
 
 export function roleAtLeast(currentRole, requiredRole) {
