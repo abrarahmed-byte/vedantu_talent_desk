@@ -1,14 +1,16 @@
 # Start here
 
-The pilot is ready for the empty GitHub repository `abrarahmed-byte/vedantu_talent_desk` and the existing Cloudflare D1 database `vedantu_talent_desk_db`.
+The pilot is deployed from `abrarahmed-byte/vedantu_talent_desk` and uses the existing Cloudflare D1 database `vedantu_talent_desk_db`.
 
-## What happens during the first online test
+## Current safe stage
 
-1. Sign in to Cloudflare from the deployment tool.
-2. Create the database tables in the already-empty D1 database.
-3. Insert six fictional candidates and one fictional duplicate.
-4. Deploy the Vedantu pilot to a free `workers.dev` address.
-5. Test search, profile views, resume preview and call logging.
+The public pilot contains six fictional candidates and keeps real Google Sheets locked. The next test is:
+
+1. enable Cloudflare Access for approved Vedantu users;
+2. deploy the private Apps Script Sheet reader;
+3. add its URL and shared secret to the Worker;
+4. connect the fictional response Sheet through the Admin wizard;
+5. confirm new, updated, merged, duplicate and failed row counts.
 
 No Google Sheet, real candidate, employee record or real resume is used in this first test.
 
@@ -25,4 +27,4 @@ Cloudflare prints the test website address after the final step.
 
 ## Safety boundary
 
-Do not connect the real Apps Script app or upload real data until Google Workspace sign-in and server-side Admin/Recruiter permissions have been added and Vedantu has approved Cloudflare as a candidate-data processor.
+Do not connect a real application Sheet until Cloudflare Access is enforced and Vedantu has approved Cloudflare as a candidate-data processor. The code intentionally rejects source and user-management actions in public pilot mode.

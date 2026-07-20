@@ -1,6 +1,6 @@
 # Vedantu Talent Desk — zero-cost Cloudflare pilot
 
-This repository is a fake-data proof of concept for Cloudflare Workers, D1 and static assets. It does not connect to the production Apps Script app and must not be loaded with real candidate information until Vedantu approves the storage and authentication design.
+This repository is a fake-data proof of concept for Cloudflare Workers, D1 and static assets. Private source connections are locked while `AUTH_MODE` is `pilot`; do not load real candidate information until Cloudflare Access and Vedantu's data approval are in place.
 
 ## Included
 
@@ -9,7 +9,12 @@ This repository is a fake-data proof of concept for Cloudflare Workers, D1 and s
 - D1 FTS5 indexed search plus freshness ranking
 - Candidate cards with identity, contact, subject/function, grades, source, resume preview, interviewers, calls, views, history and match percentage
 - Persistent profile views, resume previews and call outcomes
-- Repository, source, job and access-preview metadata
+- Admin/Recruiter server authorization and server-attributed audit events
+- Admin source wizard with automatic column suggestions and manual mapping
+- Incremental background sync, progress, ETA and import/duplicate/failure reporting
+- Central email/phone identity matching, duplicate merging and profile updates
+- Repository, source, job and workspace-access metadata
+- A zero-cost Apps Script connector for private Google Sheets
 - No Interviews tab
 - No paid AI dependency
 
@@ -29,11 +34,13 @@ The migration is safe to rerun. The fictional seed uses stable IDs and `INSERT O
 
 Run `npm run db:local`, then `npm run dev`. Search and activity tests run with `npm test`.
 
-## Before real candidate data
+## Unlocking a fictional Google Sheet test
 
-- configure Google Workspace authentication and enforce Admin/Recruiter authorization on every write endpoint;
-- obtain Vedantu approval to store candidate fields in Cloudflare D1;
-- add a signed connector secret between Apps Script and the Worker;
-- connect only a fictional Google Sheet first;
-- confirm retention, deletion, export and audit requirements;
-- keep original resumes in Google Drive.
+1. Protect the Worker with Cloudflare Access and allow only approved Vedantu email addresses.
+2. Apply all D1 migrations, including the source, access and identity tables.
+3. Deploy `google-apps-script/Code.gs` as a Web App executing as the Sheet-owning Admin.
+4. Save `APPS_SCRIPT_CONNECTOR_URL` as a Worker variable and `CONNECTOR_SECRET` as an encrypted Worker secret.
+5. Change `AUTH_MODE` to `cloudflare-access`; keep `ALLOW_PILOT_SOURCE_SYNC` false.
+6. Connect only the fictional test Sheet and verify the row, failure and duplicate totals.
+
+Before real candidate data, obtain Vedantu approval for Cloudflare storage, retention, deletion, export and audit requirements. Original resumes remain in Google Drive; D1 stores the standardized profile and the Drive link.

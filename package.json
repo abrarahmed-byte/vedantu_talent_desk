@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "test": "node --test tests/search.test.mjs",
+    "test": "node --test --test-isolation=none tests/*.test.mjs",
     "db:local": "wrangler d1 migrations apply vedantu_talent_desk_db --local && wrangler d1 execute vedantu_talent_desk_db --local --file seed.sql",
     "db:remote": "wrangler d1 migrations apply vedantu_talent_desk_db --remote && wrangler d1 execute vedantu_talent_desk_db --remote --file seed.sql",
     "deploy": "wrangler deploy"
