@@ -4,9 +4,12 @@
   "main": "src/worker.js",
   "compatibility_date": "2026-05-22",
   "workers_dev": true,
+  "keep_vars": true,
   "vars": {
     "AUTH_MODE": "cloudflare-access",
-    "ALLOW_PILOT_SOURCE_SYNC": "false"
+    "ALLOW_PILOT_SOURCE_SYNC": "false",
+    "ACCESS_TEAM_DOMAIN": "abrar-ahmed-778.cloudflareaccess.com",
+    "ACCESS_AUD": "66b9592190ccb536075375759be6a8e13d9c5d980020164ad0baee0e2e6da188"
   },
   "assets": {
     "directory": "public",

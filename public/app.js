@@ -39,6 +39,7 @@ function safeExternalUrl(value) {
 async function api(path, options = {}) {
   const response = await fetch(path, {
     ...options,
+    credentials: "same-origin",
     headers: { "content-type": "application/json", ...(options.headers || {}) },
   });
   const payload = await response.json().catch(() => ({}));
