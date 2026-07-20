@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Vedantu Talent Desk zero-cost Cloudflare pilot">
+    <meta name="robots" content="noindex,nofollow">
+    <title>Vedantu Talent Desk · Zero-cost pilot</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="pilot-ribbon"><b>ZERO-COST PILOT</b><span>Fictional profiles only · no real recruitment data</span></div>
+    <div class="app-shell">
+      <aside class="side-nav">
+        <button class="brand" data-page-link="discover" aria-label="Go to discovery">
+          <span class="v-mark"><i></i><i></i></span>
+          <span><b>vedantu</b><small>Talent Desk</small></span>
+        </button>
+        <nav aria-label="Primary navigation">
+          <button class="nav-item active" data-page-link="discover"><span>⌕</span><b>Discover</b><em id="navCandidateCount">0</em></button>
+          <button class="nav-item" data-page-link="sources"><span>▦</span><b>Sources</b><em id="navSourceCount">0</em></button>
+          <button class="nav-item" data-page-link="activity"><span>◴</span><b>Activity</b><em id="navActivityCount">0</em></button>
+        </nav>
+        <section class="health-card" aria-label="Pilot health">
+          <div><span>Database status</span><b><i></i> Connected</b></div>
+          <div class="health-track"><i></i></div>
+          <p><strong id="healthProfiles">0</strong> fictional profiles</p>
+          <p><strong id="healthDuplicates">0</strong> duplicate rows merged</p>
+        </section>
+        <div class="signed-user"><span class="avatar purple">PA</span><span><b>Pilot Admin</b><small>Test workspace</small></span></div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div><span>Talent acquisition</span><b>Central candidate pool</b><em>D1 pilot</em></div>
+          <div class="topbar-actions"><span class="latency" id="latency">Waiting for first search</span><button class="outline-button" data-page-link="sources">View pilot health</button></div>
+        </header>
+
+        <section class="page active" id="page-discover">
+          <section class="hero">
+            <div><p class="kicker">Faster candidate discovery</p><h1>Find the right profile,<br><span>without waiting on Sheets.</span></h1><p>Indexed search from the central D1 repository. Newer applications break relevance ties.</p></div>
+            <div class="hero-stat"><span>Searchable profiles</span><strong id="heroProfiles">—</strong><small>fictional pilot records</small><p><i></i> No paid AI call</p></div>
+            <i class="orbit one"></i><i class="orbit two"></i>
+          </section>
+
+          <div class="track-tabs" role="tablist" aria-label="Candidate type">
+            <button class="active" data-track="Teacher">Teachers</button>
+            <button data-track="Non-teaching">Non-teaching</button>
+            <button data-track="All">All profiles</button>
+            <p>Teaching fit uses subject, level, board, language, experience and freshness.</p>
+          </div>
+
+          <section class="search-panel">
+            <label for="searchInput">What does the ideal profile look like?</label>
+            <div class="search-box"><span>⌕</span><input id="searchInput" value="Maths teacher for grades 9–12 in Bangalore who speaks Hindi" autocomplete="off"><button id="searchButton" class="primary-button">Find matches →</button></div>
+            <div class="filter-grid">
+              <label><span>Subject / function</span><select id="subjectFilter"><option>All subjects</option><option>Mathematics</option><option>Physics</option><option>English</option><option>Academic Operations</option><option>Performance Marketing</option></select></label>
+              <label><span>Language</span><select id="languageFilter"><option>All languages</option><option>English</option><option>Hindi</option><option>Malayalam</option><option>Urdu</option><option>Marathi</option><option>Gujarati</option></select></label>
+              <label><span>Experience</span><select id="experienceFilter"><option value="0">Any experience</option><option value="24">24+ months</option><option value="48">48+ months</option><option value="72">72+ months</option></select></label>
+              <label><span>Work mode</span><select id="workModeFilter"><option>Any work mode</option><option>Online</option><option>Offline</option><option>Hybrid</option><option>Remote</option></select></label>
+              <button id="clearFilters" class="filter-clear">Clear filters</button>
+            </div>
+          </section>
+
+          <div class="understood" id="understood"><span>✦</span><p>Search understanding will appear here.</p></div>
+          <div class="results-heading"><div><h2>Best matching profiles</h2><p id="resultSummary">Loading the fictional pilot repository…</p></div><span class="freshness-note">Relevance first · freshness second</span></div>
+          <div class="candidate-list" id="candidateList" aria-live="polite">
+            <div class="loading-card"></div><div class="loading-card"></div><div class="loading-card"></div>
+          </div>
+        </section>
+
+        <section class="page" id="page-sources">
+          <div class="page-title"><div><p class="kicker">Repository health</p><h1>Sources and synchronization</h1><p>The pilot proves persistence, deduplication and progress reporting without using real Sheets yet.</p></div><button class="primary-button" id="refreshMeta">Refresh status</button></div>
+          <div class="metrics">
+            <div><span>Canonical profiles</span><strong id="metricProfiles">—</strong><small>one applicant per profile</small></div>
+            <div><span>Duplicates merged</span><strong id="metricDuplicates">—</strong><small>extra source rows consolidated</small></div>
+            <div><span>Profile views</span><strong id="metricViews">—</strong><small>stored centrally</small></div>
+            <div><span>Calls logged</span><strong id="metricCalls">—</strong><small>ongoing recruiter thread</small></div>
+          </div>
+          <div class="section-heading"><div><h2>Connected pilot sources</h2><p>The Google test Sheet becomes the next source after this database test passes.</p></div></div>
+          <div class="source-grid" id="sourceGrid"></div>
+          <div class="section-heading"><div><h2>Background jobs</h2><p>Every import exposes its current stage, progress and ETA.</p></div></div>
+          <div class="jobs" id="jobList"></div>
+          <div class="section-heading"><div><h2>Workspace access preview</h2><p>Authentication is simulated for fake-data testing and will be replaced with Vedantu Google login.</p></div></div>
+          <div class="access-list" id="accessList"></div>
+        </section>
+
+        <section class="page" id="page-activity">
+          <div class="page-title"><div><p class="kicker">Recruiter audit trail</p><h1>Profile activity</h1><p>Searches, views, resume previews, calls and synchronizations are timestamped in D1.</p></div><button class="outline-button" id="refreshActivity">Refresh log</button></div>
+          <div class="activity-layout"><section class="activity-panel" id="activityList"></section><aside class="activity-summary"><h3>Pilot usage</h3><strong id="activityViews">—</strong><span>profile views</span><div><p><b id="activityCalls">—</b><small>calls logged</small></p><p><b id="activityProfiles">—</b><small>profiles</small></p></div><p class="safe-note"><i></i>This environment contains fictional data only.</p></aside></div>
+        </section>
+      </main>
+    </div>
+
+    <div class="backdrop hidden" id="profileBackdrop">
+      <aside class="profile-drawer" role="dialog" aria-modal="true" aria-labelledby="drawerName">
+        <header><div><p class="kicker">Standardized candidate profile</p><h2 id="drawerName">Candidate</h2></div><button data-close-drawer aria-label="Close profile">×</button></header>
+        <div id="drawerContent"></div>
+      </aside>
+    </div>
+
+    <div class="modal-backdrop hidden" id="callBackdrop">
+      <form class="call-modal" id="callForm">
+        <button type="button" class="modal-close" data-close-call aria-label="Close call form">×</button>
+        <p class="kicker">Quick recruiter update</p><h2>I called this profile</h2><p id="callCandidateName">Candidate</p>
+        <label>Role discussed<input id="callRole" required></label>
+        <label>Outcome<select id="callOutcome" required><option value="">Choose outcome</option><option>DNP</option><option>Interested</option><option>Not Interested</option><option>Call Back</option></select></label>
+        <label>Short note <small>Optional</small><textarea id="callNote" rows="3" maxlength="500" placeholder="Only add what the next recruiter needs to know."></textarea></label>
+        <button class="primary-button full" type="submit">Save call update</button>
+      </form>
+    </div>
+
+    <div class="toast hidden" id="toast" role="status"><span>✓</span><p></p></div>
+  </body>
+</html>
