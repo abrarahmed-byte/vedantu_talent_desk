@@ -196,7 +196,8 @@ async function getMeta(env, user) {
       SUM(CASE WHEN employment_status='Active employee' THEN 1 ELSE 0 END) AS active_employees,
       SUM(CASE WHEN employment_status='Former employee' THEN 1 ELSE 0 END) AS former_employees
       FROM employment_records`).first(),
-    env.DB.prepare(`SELECT s.*, c.spreadsheet_id, c.sheet_url, c.tab_name, c.last_cursor, c.last_row_count, c.last_error
+    env.DB.prepare(`SELECT s.*, c.spreadsheet_id, c.sheet_url, c.tab_name, c.last_cursor, c.last_row_count, c.last_error,
+      (SELECT COUNT(*) FROM source_records sr WHERE sr.source_id=s.id AND sr.applied_at='1970-01-01T00:00:00.000Z') AS application_history_pending
       FROM sources s LEFT JOIN source_connections c ON c.source_id = s.id ORDER BY s.created_at DESC`).all(),
     env.DB.prepare("SELECT a.*, c.name AS candidate_name FROM activity_logs a LEFT JOIN candidates c ON c.id = a.candidate_id ORDER BY a.created_at DESC LIMIT 40").all(),
     env.DB.prepare(`SELECT j.*, s.label AS source_label, st.imported_rows, st.updated_rows, st.merged_rows,

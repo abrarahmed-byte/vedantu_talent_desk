@@ -202,6 +202,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .source-stats b, .source-stats small { display: block; }
 .source-stats b { font-size: 13px; }
 .source-stats small { color: var(--muted); font-size: 6px; }
+.source-history-progress { margin: 10px 0 0 !important; padding: 8px 9px; display: flex; justify-content: space-between; gap: 12px; border-radius: 7px; color: #6844a6 !important; background: var(--purple-soft); font-size: 7px !important; }
+.source-history-progress b, .source-history-progress span { display: block; }
 .source-card footer { margin-top: 15px; display: flex; justify-content: space-between; color: var(--muted); font-size: 7px; }
 .jobs, .access-list { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: white; }
 .job-row, .access-row { padding: 14px 16px; display: grid; align-items: center; gap: 14px; border-bottom: 1px solid #edf0f1; }
