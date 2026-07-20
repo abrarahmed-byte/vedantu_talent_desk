@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mergeStandardized, parseSpreadsheetId, standardizeRow, withIdentityLocks } from "../src/sync.js";
+import { connectorRequest, mergeStandardized, parseSpreadsheetId, standardizeRow, withIdentityLocks } from "../src/sync.js";
 
 test("parses a Google Spreadsheet URL or id", () => {
   const id = "1AbCdEfGhIjKlMnOpQrStUvWxYz123456";
@@ -63,4 +63,12 @@ test("parallel imports serialize rows that share an identity", async () => {
   });
   await Promise.all([run(), run(), run()]);
   assert.equal(maximumActive, 1);
+});
+
+test("temporary connector failures are marked for an automatic retry", async (context) => {
+  context.mock.method(globalThis, "fetch", async () => new Response("{}", { status: 503 }));
+  await assert.rejects(
+    connectorRequest({ APPS_SCRIPT_CONNECTOR_URL: "https://connector.example", CONNECTOR_SECRET: "test" }, { action: "readRows" }),
+    (error) => error.retryable === true,
+  );
 });

@@ -34,7 +34,7 @@ export const CANONICAL_FIELDS = [
   { key: "college", label: "College / institution", required: false, aliases: ["college", "institution", "university"] },
 ];
 
-const SYNC_BATCH_SIZE = 200;
+const SYNC_BATCH_SIZE = 100;
 const SYNC_BATCHES_PER_RUN = 1;
 
 function text(value, max = 1000) {
@@ -318,16 +318,34 @@ export async function importMappedRows(env, source, rows, mapping) {
   return stats;
 }
 
-async function connectorRequest(env, payload) {
+export async function connectorRequest(env, payload) {
   if (!env.APPS_SCRIPT_CONNECTOR_URL || !env.CONNECTOR_SECRET) throw new Error("The Google Sheets connector has not been configured yet");
-  const response = await fetch(env.APPS_SCRIPT_CONNECTOR_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ...payload, secret: env.CONNECTOR_SECRET }),
-  });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok || result.ok === false) throw new Error(result.error || `Google connector failed (${response.status})`);
-  return result;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(env.APPS_SCRIPT_CONNECTOR_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...payload, secret: env.CONNECTOR_SECRET }),
+      signal: controller.signal,
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.ok === false) {
+      const error = new Error(result.error || `Google connector failed (${response.status})`);
+      error.retryable = response.status === 429 || response.status >= 500;
+      throw error;
+    }
+    return result;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      const timeoutError = new Error("Google connector timed out; the batch will retry automatically");
+      timeoutError.retryable = true;
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function previewGoogleSheet(env, sheetUrl, tabName) {
@@ -452,6 +470,14 @@ export async function runSourceSync(env, sourceId, jobId, fullRefresh = false, r
     ]);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Source sync failed";
+    if (error?.retryable) {
+      await persistJob(env, jobId, { status: "Queued", stage: "Connector retry queued", processed: Math.max(0, cursor - 2), total: totalRows, eta: 30, message }, stats);
+      await env.DB.batch([
+        env.DB.prepare("UPDATE sources SET status='Syncing' WHERE id=?").bind(sourceId),
+        env.DB.prepare("UPDATE source_connections SET last_error=?, updated_at=CURRENT_TIMESTAMP WHERE source_id=?").bind(message, sourceId),
+      ]);
+      return;
+    }
     stats.failed += 1;
     stats.errors.push({ row: "connector", message });
     await persistJob(env, jobId, { status: "Failed", stage: "Needs attention", processed: stats.processed, total: totalRows, eta: 0, message }, stats);
