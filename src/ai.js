@@ -5,7 +5,7 @@ export const AI_SCHEMA_VERSION = "candidate-evidence-v2";
 export const DEFAULT_AI_MODEL = "gpt-5-nano";
 
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
-const MAX_PILOT_SIZE = 20;
+const MAX_BATCH_SIZE = 20;
 const MAX_PREPARE_PER_RUN = 4;
 const MAX_RESUME_BYTES = 5 * 1024 * 1024;
 
@@ -197,10 +197,10 @@ async function candidateClaims(env, candidateId) {
   return compactObject({ standardized, sourceRows });
 }
 
-export async function enqueueAiPilot(env, requestedLimit = MAX_PILOT_SIZE) {
-  if (!env.OPENAI_API_KEY) throw new Error("Add the OpenAI API key in Cloudflare before starting the pilot");
+export async function enqueueAiBatch(env, requestedLimit = MAX_BATCH_SIZE) {
+  if (!env.OPENAI_API_KEY) throw new Error("Add the OpenAI API key in Cloudflare before starting a batch");
   if (!env.APPS_SCRIPT_CONNECTOR_URL || !env.CONNECTOR_SECRET) throw new Error("The Google Drive connector is not configured");
-  const limit = Math.min(MAX_PILOT_SIZE, Math.max(1, Math.round(Number(requestedLimit) || MAX_PILOT_SIZE)));
+  const limit = Math.min(MAX_BATCH_SIZE, Math.max(1, Math.round(Number(requestedLimit) || MAX_BATCH_SIZE)));
   const rows = (await env.DB.prepare(`SELECT c.id, c.resume_url FROM candidates c
     WHERE trim(c.resume_url) <> '' AND NOT EXISTS (
       SELECT 1 FROM ai_extraction_jobs j WHERE j.candidate_id=c.id AND j.prompt_version=?
@@ -226,7 +226,7 @@ async function prepareOneJob(env, job) {
     const resume = await connectorRequest(env, { action: "readResume", resumeUrl: job.resume_url, maxBytes: MAX_RESUME_BYTES });
     if (!resume?.base64 || !resume?.fileName) throw new Error("The résumé could not be read from Google Drive");
     const bytes = decodeBase64(resume.base64);
-    if (bytes.byteLength > MAX_RESUME_BYTES) throw new Error("The résumé is larger than the 5 MB pilot limit");
+    if (bytes.byteLength > MAX_RESUME_BYTES) throw new Error("The résumé is larger than the 5 MB processing limit");
     const uploaded = await uploadFile(env, bytes, compactString(resume.fileName, 240), compactString(resume.mimeType, 160) || "application/pdf", "user_data");
     await env.DB.prepare(`UPDATE ai_extraction_jobs SET status='prepared', resume_file_id=?, resume_filename=?,
       resume_mime_type=?, resume_fingerprint=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(
@@ -280,7 +280,12 @@ export function buildBatchJsonl(jobs) {
 }
 
 async function submitPreparedBatch(env) {
-  const batchSize = Math.min(MAX_PILOT_SIZE, Math.max(1, Number(env.AI_BATCH_SIZE) || MAX_PILOT_SIZE));
+  const batchSize = Math.min(MAX_BATCH_SIZE, Math.max(1, Number(env.AI_BATCH_SIZE) || MAX_BATCH_SIZE));
+  const readiness = await env.DB.prepare(`SELECT
+    SUM(CASE WHEN status='prepared' AND batch_id='' THEN 1 ELSE 0 END) AS prepared,
+    SUM(CASE WHEN status IN ('queued','preparing') THEN 1 ELSE 0 END) AS waiting
+    FROM ai_extraction_jobs`).first();
+  if (Number(readiness?.prepared || 0) < batchSize && Number(readiness?.waiting || 0) > 0) return null;
   const first = await env.DB.prepare(`SELECT model FROM ai_extraction_jobs WHERE status='prepared' AND batch_id=''
     ORDER BY created_at LIMIT 1`).first();
   if (!first?.model) return null;
@@ -424,16 +429,79 @@ async function pollBatches(env) {
   }
 }
 
+export function classifyAiFailure(status, message) {
+  const text = compactString(message, 800).toLowerCase();
+  if (/permission to call driveapp|authorization[_ -]is[_ -]required|drive\.readonly/.test(text)) {
+    return { category: "Connector authorization", autoRetry: false, guidance: "Run authorizeTalentDeskAccess as the Apps Script deployment owner, approve Drive read access, deploy a new version, then retry all." };
+  }
+  if (status === "no_resume" || /not found|permission|access denied|not accessible|unsupported|larger than|invalid.*(?:drive|resume|link)/.test(text)) {
+    return { category: "Resume access", autoRetry: false, guidance: "Check that the resume link is valid and shared with the Apps Script owner, then retry." };
+  }
+  if (/model|project.*access|api key|authentication|unauthorized|forbidden|quota|billing/.test(text)) {
+    return { category: "OpenAI setup", autoRetry: false, guidance: "Review the OpenAI model, project access, API key, quota, or billing setup before retrying." };
+  }
+  if (/schema|json|structured output|incomplete|refused/.test(text)) {
+    return { category: "AI response", autoRetry: false, guidance: "The AI response could not be saved. Retry this profile; repeated failures need review." };
+  }
+  if (/timeout|timed out|429|rate limit|network|temporar|5\d\d|batch (?:failed|expired|cancelled)|no result was returned/.test(text)) {
+    return { category: "Temporary service issue", autoRetry: true, guidance: "This will retry automatically up to three attempts." };
+  }
+  return { category: "Needs review", autoRetry: false, guidance: "Review the message and retry after correcting the underlying issue." };
+}
+
+async function retryStatements(env, jobs) {
+  if (!jobs.length) return 0;
+  await env.DB.batch(jobs.map((job) => env.DB.prepare(`UPDATE ai_extraction_jobs SET status='queued', batch_id='',
+    resume_file_id='', resume_filename='', resume_mime_type='', error_message='', completed_at=NULL,
+    updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('failed','no_resume')`).bind(job.id)));
+  return jobs.length;
+}
+
+export async function retryAiFailures(env, jobId = "", retryableOnly = false) {
+  const rows = (await env.DB.prepare(`SELECT id, status, error_message, attempt_count FROM ai_extraction_jobs
+    WHERE status IN ('failed','no_resume') ${jobId ? "AND id=?" : ""} ORDER BY updated_at LIMIT 100`)
+    .bind(...(jobId ? [jobId] : [])).all()).results || [];
+  const selected = rows.filter((job) => !retryableOnly || classifyAiFailure(job.status, job.error_message).autoRetry);
+  return retryStatements(env, selected);
+}
+
+async function autoRetryAiFailures(env) {
+  const rows = (await env.DB.prepare(`SELECT id, status, error_message, attempt_count FROM ai_extraction_jobs
+    WHERE status='failed' AND attempt_count<3 AND updated_at <= datetime('now','-10 minutes')
+    ORDER BY updated_at LIMIT 20`).all()).results || [];
+  return retryStatements(env, rows.filter((job) => classifyAiFailure(job.status, job.error_message).autoRetry));
+}
+
+export async function aiAutomationEnabled(env) {
+  const setting = await env.DB.prepare("SELECT value FROM workspace_settings WHERE key='auto_classify_new_profiles'").first();
+  return String(setting?.value || "0") === "1";
+}
+
+export async function setAiAutomation(env, enabled, user) {
+  await env.DB.prepare(`INSERT INTO workspace_settings(key, value, updated_by, updated_at)
+    VALUES ('auto_classify_new_profiles', ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP`)
+    .bind(enabled ? "1" : "0", compactString(user?.email, 320)).run();
+  return Boolean(enabled);
+}
+
 export async function processAiEnrichment(env) {
   if (!env.OPENAI_API_KEY || !env.APPS_SCRIPT_CONNECTOR_URL || !env.CONNECTOR_SECRET) return { configured: false };
   await pollBatches(env);
+  const retried = await autoRetryAiFailures(env);
+  let automaticallyQueued = 0;
+  if (await aiAutomationEnabled(env)) {
+    const active = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ai_extraction_jobs
+      WHERE status IN ('queued','preparing','prepared','batched')`).first();
+    if (!Number(active?.count || 0)) automaticallyQueued = (await enqueueAiBatch(env, MAX_BATCH_SIZE)).queued;
+  }
   const prepared = await prepareQueuedJobs(env);
   const batchId = await submitPreparedBatch(env);
-  return { configured: true, prepared, batchId };
+  return { configured: true, prepared, batchId, retried, automaticallyQueued };
 }
 
-export async function getAiMeta(env) {
-  const [counts, recentBatch] = await Promise.all([
+export async function getAiMeta(env, includeFailures = false) {
+  const [counts, recentBatch, automatic, failureRows] = await Promise.all([
     env.DB.prepare(`SELECT
       COUNT(*) AS total,
       SUM(CASE WHEN status IN ('queued','preparing','prepared') THEN 1 ELSE 0 END) AS queued,
@@ -442,13 +510,23 @@ export async function getAiMeta(env) {
       SUM(CASE WHEN status IN ('failed','no_resume') THEN 1 ELSE 0 END) AS failed
       FROM ai_extraction_jobs`).first(),
     env.DB.prepare("SELECT * FROM ai_batches ORDER BY created_at DESC LIMIT 1").first(),
+    aiAutomationEnabled(env),
+    includeFailures
+      ? env.DB.prepare(`SELECT j.id, j.candidate_id, j.status, j.error_message, j.attempt_count, j.updated_at,
+          c.name AS candidate_name, c.source_sheet, c.resume_url FROM ai_extraction_jobs j
+          JOIN candidates c ON c.id=j.candidate_id WHERE j.status IN ('failed','no_resume')
+          ORDER BY j.updated_at DESC LIMIT 50`).all()
+      : Promise.resolve({ results: [] }),
   ]);
+  const failures = (failureRows.results || []).map((failure) => ({ ...failure, ...classifyAiFailure(failure.status, failure.error_message) }));
   return {
     configured: Boolean(env.OPENAI_API_KEY && env.APPS_SCRIPT_CONNECTOR_URL && env.CONNECTOR_SECRET),
     model: model(env),
-    batchSize: Math.min(MAX_PILOT_SIZE, Math.max(1, Number(env.AI_BATCH_SIZE) || MAX_PILOT_SIZE)),
+    batchSize: Math.min(MAX_BATCH_SIZE, Math.max(1, Number(env.AI_BATCH_SIZE) || MAX_BATCH_SIZE)),
     counts: counts || { total: 0, queued: 0, processing: 0, completed: 0, failed: 0 },
     latestBatch: recentBatch || null,
+    automatic,
+    failures,
   };
 }
 

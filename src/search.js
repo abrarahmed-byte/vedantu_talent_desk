@@ -35,7 +35,65 @@ const SUBJECT_TERMS = [
 ];
 
 const LANGUAGES = ["English", "Hindi", "Malayalam", "Urdu", "Marathi", "Gujarati", "Tamil", "Telugu", "Kannada", "Bengali"];
-const LOCATIONS = ["Bengaluru", "Bangalore", "Kochi", "New Delhi", "Delhi", "Gurugram", "Gurgaon", "Pune", "Ahmedabad", "Mumbai", "Hyderabad", "Chennai", "Kolkata"];
+
+const LOCATION_GROUPS = [
+  { label: "Andhra Pradesh", terms: ["andhra pradesh"] },
+  { label: "Arunachal Pradesh", terms: ["arunachal pradesh"] },
+  { label: "Assam", terms: ["assam"] },
+  { label: "Bihar", terms: ["bihar"] },
+  { label: "Chhattisgarh", terms: ["chhattisgarh", "chattisgarh"] },
+  { label: "Goa", terms: ["goa"] },
+  { label: "Gujarat", terms: ["gujarat"] },
+  { label: "Haryana", terms: ["haryana"] },
+  { label: "Himachal Pradesh", terms: ["himachal pradesh"] },
+  { label: "Jharkhand", terms: ["jharkhand"] },
+  { label: "Karnataka", terms: ["karnataka"] },
+  { label: "Kerala", terms: ["kerala"] },
+  { label: "Madhya Pradesh", terms: ["madhya pradesh"] },
+  { label: "Maharashtra", terms: ["maharashtra"] },
+  { label: "Manipur", terms: ["manipur"] },
+  { label: "Meghalaya", terms: ["meghalaya"] },
+  { label: "Mizoram", terms: ["mizoram"] },
+  { label: "Nagaland", terms: ["nagaland"] },
+  { label: "Odisha", terms: ["odisha", "orissa"] },
+  { label: "Punjab", terms: ["punjab"] },
+  { label: "Rajasthan", terms: ["rajasthan"] },
+  { label: "Sikkim", terms: ["sikkim"] },
+  { label: "Tamil Nadu", terms: ["tamil nadu"] },
+  { label: "Telangana", terms: ["telangana"] },
+  { label: "Tripura", terms: ["tripura"] },
+  { label: "Uttar Pradesh", terms: ["uttar pradesh"] },
+  { label: "Uttarakhand", terms: ["uttarakhand", "uttaranchal"] },
+  { label: "West Bengal", terms: ["west bengal"] },
+  { label: "Andaman and Nicobar Islands", terms: ["andaman and nicobar", "andaman nicobar"] },
+  { label: "Chandigarh", terms: ["chandigarh"] },
+  { label: "Dadra and Nagar Haveli and Daman and Diu", terms: ["dadra and nagar haveli", "daman and diu"] },
+  { label: "Delhi", terms: ["new delhi", "delhi", "nct delhi"] },
+  { label: "Jammu and Kashmir", terms: ["jammu and kashmir", "jammu kashmir"] },
+  { label: "Ladakh", terms: ["ladakh"] },
+  { label: "Lakshadweep", terms: ["lakshadweep"] },
+  { label: "Puducherry", terms: ["puducherry", "pondicherry"] },
+  { label: "Bengaluru", terms: ["bengaluru", "bangalore"] },
+  { label: "Gurugram", terms: ["gurugram", "gurgaon"] },
+  { label: "Kochi", terms: ["kochi", "cochin"] },
+  { label: "Mumbai", terms: ["mumbai", "bombay"] },
+  { label: "Chennai", terms: ["chennai", "madras"] },
+  { label: "Kolkata", terms: ["kolkata", "calcutta"] },
+  { label: "Thiruvananthapuram", terms: ["thiruvananthapuram", "trivandrum"] },
+  { label: "Kozhikode", terms: ["kozhikode", "calicut"] },
+  { label: "Visakhapatnam", terms: ["visakhapatnam", "vizag"] },
+  { label: "Vadodara", terms: ["vadodara", "baroda"] },
+  { label: "Mysuru", terms: ["mysuru", "mysore"] },
+  { label: "Mangaluru", terms: ["mangaluru", "mangalore"] },
+  ...["Agra", "Ahmedabad", "Amritsar", "Bhopal", "Bhubaneswar", "Coimbatore", "Cuttack", "Dehradun",
+    "Faridabad", "Ghaziabad", "Greater Noida", "Guntur", "Guwahati", "Hyderabad", "Indore", "Jaipur",
+    "Jamshedpur", "Kanpur", "Lucknow", "Ludhiana", "Madurai", "Meerut", "Mohali", "Nagpur", "Nashik",
+    "Navi Mumbai", "Noida", "Patna", "Pune", "Raipur", "Rajkot", "Ranchi", "Secunderabad", "Siliguri",
+    "Surat", "Thane", "Thrissur", "Tirupati", "Vadodara", "Varanasi", "Vijayawada", "Warangal"]
+    .map((label) => ({ label, terms: [label.toLowerCase()] })),
+];
+
+const LOCATION_NOISE = /\b(?:jee|neet|olympiad|foundation|physics|chemistry|mathematics|maths|biology|english|coding|teacher|faculty|educator|grade|grades|class|classes|experience|experienced|expert|skills?|proficient|online|remote)\b/i;
 
 function hasTerm(value, term) {
   const haystack = ` ${String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ")} `;
@@ -72,6 +130,42 @@ function findKnown(query, values) {
   return values.filter((value) => hasTerm(query, value));
 }
 
+function locationGroup(value) {
+  return LOCATION_GROUPS.find((group) => group.label.toLowerCase() === String(value || "").toLowerCase()
+    || group.terms.some((term) => term === String(value || "").toLowerCase()));
+}
+
+function titleCase(value) {
+  return String(value || "").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function contextualLocations(query) {
+  const normalized = String(query || "").toLowerCase().replace(/[()]/g, " ");
+  const locations = [];
+  const pattern = /\b(?:based\s+in|located\s+in|location\s*(?:is|:)?|city\s*(?:is|:)?|state\s*(?:is|:)?|from|in)\s+([a-z][a-z .'-]{1,70})/g;
+  for (const match of normalized.matchAll(pattern)) {
+    const prefix = normalized.slice(Math.max(0, match.index - 24), match.index);
+    if (/\b(?:experience|experienced|expert|speciali[sz]ed|proficient|skilled)\s*$/.test(prefix)) continue;
+    const phrase = match[1].split(/[,;]|\b(?:with|who|that|for|having|and|or|teaching|speaks?|grade|grades|class|classes|board|experience|years?|months?|available|open)\b/)[0].trim();
+    if (!phrase || phrase.length > 45 || LOCATION_NOISE.test(phrase)) continue;
+    const group = locationGroup(phrase);
+    locations.push(group?.label || titleCase(phrase));
+  }
+  return locations;
+}
+
+function findLocations(query) {
+  const known = LOCATION_GROUPS.filter((group) => group.terms.some((term) => hasTerm(query, term))).map((group) => group.label);
+  return unique([...known, ...contextualLocations(query)]);
+}
+
+export function locationSearchTerms(locations) {
+  return unique((locations || []).flatMap((location) => {
+    const group = locationGroup(location);
+    return group ? [group.label, ...group.terms] : [location];
+  }).map((value) => String(value || "").toLowerCase()).filter(Boolean));
+}
+
 function findSubjects(query) {
   return SUBJECT_TERMS.filter((subject) => subject.terms.some((term) => hasTerm(query, term))).map((subject) => subject.label);
 }
@@ -90,7 +184,8 @@ function findExams(query) {
 
 export function parseSearchIntent(query) {
   const normalized = String(query || "").toLowerCase();
-  const locations = findKnown(query, LOCATIONS).map((value) => value === "Bangalore" ? "Bengaluru" : value === "Gurgaon" ? "Gurugram" : value);
+  const locations = findLocations(query);
+  const pincodes = unique(normalized.match(/\b[1-9]\d{5}\b/g) || []);
   const gradeMatches = [...normalized.matchAll(/(?:grade|grades|class|classes)\s*(\d{1,2})(?:\s*(?:-|to|–)\s*(\d{1,2}))?/g)];
   const grades = [];
   gradeMatches.forEach((match) => {
@@ -109,6 +204,7 @@ export function parseSearchIntent(query) {
     exams: findExams(query),
     languages: findKnown(query, LANGUAGES),
     locations: unique(locations),
+    pincodes,
     grades: unique(grades),
     minimumExperienceMonths: experienceMatch ? Number(experienceMatch[1]) * 12 : 0,
     freshestFirst: /fresh|latest|newest|recent/.test(normalized),
@@ -151,7 +247,8 @@ export function matchesMandatoryIntent(candidate, intent) {
   if (intent.exams.length && !intent.exams.every((exam) => candidateSupportsExam(candidate, exam))) return false;
   if (intent.languages.length && !intent.languages.every((language) => hasTerm(candidate.languages_display, language))) return false;
   const locationText = `${candidate.city || ""} ${candidate.state || ""}`;
-  if (intent.locations.length && !intent.locations.some((location) => hasTerm(locationText, location))) return false;
+  if (intent.locations.length && !locationSearchTerms(intent.locations).some((location) => hasTerm(locationText, location))) return false;
+  if (intent.pincodes?.length && !intent.pincodes.every((pincode) => hasTerm(candidate.search_text, pincode))) return false;
   if (intent.grades.length) {
     const supportedGrades = candidateGradeSet(candidate);
     if (!intent.grades.every((grade) => supportedGrades.has(grade))) return false;
@@ -160,7 +257,7 @@ export function matchesMandatoryIntent(candidate, intent) {
   return true;
 }
 
-export function scoreCandidate(candidate, query, intent, now = Date.now()) {
+export function scoreCandidate(candidate, query, intent, now = Date.now(), options = {}) {
   const haystack = String(candidate.search_text || "").toLowerCase();
   const queryTokens = intent.tokens || expandTokens(tokenize(query));
   const matchedTokens = queryTokens.filter((token) => haystack.includes(token));
@@ -171,11 +268,14 @@ export function scoreCandidate(candidate, query, intent, now = Date.now()) {
   if (intent.exams.length) score += 18;
   if (intent.languages.length) score += 9;
   if (intent.locations.length) score += 9;
+  if (intent.pincodes?.length) score += 7;
   if (intent.grades.length) score += 12;
   if (intent.minimumExperienceMonths) score += 7;
   const applied = Date.parse(candidate.applied_at || "") || 0;
   const ageDays = Math.max((now - applied) / 86400000, 0);
-  const freshness = Math.max(2, Math.round(10 - Math.min(ageDays, 120) / 120 * 8));
+  const decayDays = Math.max(0, Number(options.freshnessDecayDays ?? 120));
+  const freshnessWeight = Math.max(0, Math.min(3, Number(options.freshnessWeight ?? 1)));
+  const freshness = !decayDays || !freshnessWeight ? 0 : Math.round(Math.max(0, 10 - ageDays / decayDays * 10) * freshnessWeight);
   return Math.max(15, Math.min(99, score + freshness));
 }
 
@@ -183,6 +283,7 @@ export function describeIntent(intent) {
   const parts = [];
   if (intent.track !== "All") parts.push(intent.track);
   parts.push(...intent.subjects, ...intent.exams, ...intent.locations, ...intent.languages);
+  if (intent.pincodes?.length) parts.push(...intent.pincodes.map((pincode) => `Pincode ${pincode}`));
   if (intent.grades.length) parts.push(`Grades ${Math.min(...intent.grades)}–${Math.max(...intent.grades)}`);
   if (intent.minimumExperienceMonths) parts.push(`${intent.minimumExperienceMonths}+ months experience`);
   parts.push("fresh profiles first when fit is similar");

@@ -1,7 +1,7 @@
-import { buildFtsQuery, describeIntent, matchesMandatoryIntent, parseSearchIntent, scoreCandidate } from "./search.js";
+import { buildFtsQuery, describeIntent, locationSearchTerms, parseSearchIntent, scoreCandidate } from "./search.js";
 import { AuthError, authenticate, canManageSources, requireRole, roleAtLeast } from "./auth.js";
-import { CANONICAL_FIELDS, EMPLOYMENT_FIELDS, parseSpreadsheetId, previewGoogleSheet, runSourceSync } from "./sync.js";
-import { enqueueAiPilot, getAiMeta, processAiEnrichment, profileClassification, verificationForIntent } from "./ai.js";
+import { backfillApplicationDates, CANONICAL_FIELDS, EMPLOYMENT_FIELDS, parseSpreadsheetId, previewGoogleSheet, runSourceSync } from "./sync.js";
+import { enqueueAiBatch, getAiMeta, processAiEnrichment, profileClassification, retryAiFailures, setAiAutomation } from "./ai.js";
 import { EXPERIENCE_FILTERS, languageFilterValues, subjectFilterTerms, subjectFilterValues, workModeFilterValues } from "./filters.js";
 import { exportSuperadminData, getSuperadminCandidate, getSuperadminDashboard, updateSuperadminCandidate } from "./superadmin.js";
 
@@ -74,10 +74,34 @@ async function getCandidates(request, env) {
   const language = clean(url.searchParams.get("language"), 50);
   const workMode = clean(url.searchParams.get("workMode"), 30);
   const minimumExperience = Math.max(Number(url.searchParams.get("experience")) || 0, 0);
+  const minimumViews = Math.max(0, Math.round(Number(url.searchParams.get("minViews")) || 0));
+  const minimumCalls = Math.max(0, Math.round(Number(url.searchParams.get("minCalls")) || 0));
+  const maximumAgeDays = Math.max(0, Math.min(3650, Math.round(Number(url.searchParams.get("maxAgeDays")) || 0)));
+  const freshnessDecayDays = Math.max(0, Math.min(3650, Math.round(Number(url.searchParams.get("freshnessDecayDays")) || 120)));
+  const freshnessWeight = Math.max(0, Math.min(3, Number(url.searchParams.get("freshnessWeight")) || 1));
+  const page = Math.max(1, Math.round(Number(url.searchParams.get("page")) || 1));
+  const pageSize = Math.max(10, Math.min(100, Math.round(Number(url.searchParams.get("pageSize")) || 40)));
+  const offset = (page - 1) * pageSize;
   const includeClaims = url.searchParams.get("includeClaims") === "1";
   const intent = parseSearchIntent(query);
   const conditions = [];
   const bindings = [];
+  const addLikeAny = (column, terms) => {
+    const usable = [...new Set((terms || []).filter(Boolean))].slice(0, 16);
+    if (!usable.length) return;
+    conditions.push(`(${usable.map(() => `${column} LIKE ?`).join(" OR ")})`);
+    bindings.push(...usable.map((term) => `%${String(term).toLowerCase()}%`));
+  };
+  const addEvidenceRequirement = (category, terms) => {
+    const usable = [...new Set((terms || []).filter(Boolean))].slice(0, 16);
+    if (!usable.length) return;
+    const statuses = includeClaims ? "('supported','claim_only')" : "('supported')";
+    conditions.push(`(ai.status IS NULL OR ai.status <> 'completed' OR EXISTS (
+      SELECT 1 FROM candidate_ai_facts f WHERE f.candidate_id=c.id AND f.category=?
+      AND f.verification_status IN ${statuses} AND (${usable.map(() => "lower(f.normalized_value) LIKE ?").join(" OR ")})
+    ))`);
+    bindings.push(category, ...usable.map((term) => `%${String(term).toLowerCase()}%`));
+  };
   const effectiveTrack = track && track !== "All" ? track : intent.track !== "All" ? intent.track : "";
   if (effectiveTrack) {
     conditions.push(`(CASE WHEN ai.status='completed' AND json_extract(ai.canonical_json,
@@ -87,51 +111,79 @@ async function getCandidates(request, env) {
   }
   if (subject && subject !== "All subjects") {
     const terms = subjectFilterTerms(subject).filter(Boolean).slice(0, 10);
-    conditions.push(`(${terms.map(() => "c.search_text LIKE ?").join(" OR ")})`);
-    bindings.push(...terms.map((term) => `%${term}%`));
+    addLikeAny("c.search_text", terms);
   }
-  if (language && language !== "All languages") { conditions.push("c.search_text LIKE ?"); bindings.push(`%${language.toLowerCase()}%`); }
+  if (intent.subjects.length) {
+    const terms = intent.subjects.flatMap((value) => subjectFilterTerms(value));
+    addLikeAny("c.search_text", terms);
+    addEvidenceRequirement("subject", terms);
+  }
+  for (const exam of intent.exams) {
+    const terms = exam === "JEE" ? ["jee", "jee main", "jee advanced", "iit jee"]
+      : exam === "NEET UG" ? ["neet", "neet ug"]
+        : exam === "Olympiad / NTSE" ? ["olympiad", "ntse"]
+          : [exam.toLowerCase()];
+    addLikeAny("c.search_text", terms);
+    addEvidenceRequirement("exam", terms);
+  }
+  if (language && language !== "All languages") addLikeAny("c.search_text", [language]);
+  for (const intentLanguage of intent.languages) addLikeAny("c.search_text", [intentLanguage]);
+  if (intent.locations.length) {
+    const terms = locationSearchTerms(intent.locations).slice(0, 16);
+    conditions.push(`(${terms.map(() => "(lower(c.city) LIKE ? OR lower(c.state) LIKE ?)").join(" OR ")})`);
+    terms.forEach((term) => bindings.push(`%${term}%`, `%${term}%`));
+  }
+  if (intent.pincodes.length) {
+    addLikeAny("c.search_text", intent.pincodes);
+  }
+  if (intent.grades.length) addLikeAny("c.search_text", [Math.min(...intent.grades), Math.max(...intent.grades)]);
   if (workMode === "Online / Remote") conditions.push("(lower(c.work_mode) LIKE '%online%' OR lower(c.work_mode) LIKE '%remote%')");
   else if (workMode === "Offline / On-site") conditions.push("(lower(c.work_mode) LIKE '%offline%' OR lower(c.work_mode) LIKE '%on-site%' OR lower(c.work_mode) LIKE '%onsite%')");
   else if (workMode && workMode !== "Any work mode") { conditions.push("lower(c.work_mode) LIKE ?"); bindings.push(`%${workMode.toLowerCase()}%`); }
   const effectiveExperience = Math.max(minimumExperience, intent.minimumExperienceMonths || 0);
   if (effectiveExperience) { conditions.push("c.experience_months >= ?"); bindings.push(effectiveExperience); }
+  if (minimumViews) { conditions.push("c.view_count >= ?"); bindings.push(minimumViews); }
+  if (minimumCalls) { conditions.push("c.call_count >= ?"); bindings.push(minimumCalls); }
+  if (maximumAgeDays) { conditions.push("c.applied_at >= datetime('now', ?)"); bindings.push(`-${maximumAgeDays} days`); }
   const ftsQuery = buildFtsQuery(query);
-  let sql = `SELECT c.*, p.standardized_json, ai.status AS ai_status, ai.summary AS ai_summary,
-    ai.canonical_json AS ai_canonical_json, ai.processed_at AS ai_processed_at
-    FROM candidates c LEFT JOIN candidate_profiles p ON p.candidate_id = c.id
-    LEFT JOIN candidate_ai_profiles ai ON ai.candidate_id = c.id`;
-  if (ftsQuery) {
-    sql += " JOIN candidates_fts ON candidates_fts.candidate_id = c.id";
-    conditions.unshift("candidates_fts MATCH ?");
-    bindings.unshift(ftsQuery);
-  }
-  if (conditions.length) sql += ` WHERE ${conditions.join(" AND ")}`;
-  sql += " ORDER BY c.applied_at DESC LIMIT 800";
-  let rows = (await env.DB.prepare(sql).bind(...bindings).all()).results || [];
-  if (!rows.length && ftsQuery) {
-    let fallbackSql = `SELECT c.*, p.standardized_json, ai.status AS ai_status, ai.summary AS ai_summary,
-      ai.canonical_json AS ai_canonical_json, ai.processed_at AS ai_processed_at
-      FROM candidates c LEFT JOIN candidate_profiles p ON p.candidate_id = c.id
-      LEFT JOIN candidate_ai_profiles ai ON ai.candidate_id = c.id`;
-    const fallbackConditions = conditions.slice(1);
-    const fallbackBindings = bindings.slice(1);
-    if (fallbackConditions.length) fallbackSql += ` WHERE ${fallbackConditions.join(" AND ")}`;
-    fallbackSql += " ORDER BY c.applied_at DESC LIMIT 800";
-    rows = (await env.DB.prepare(fallbackSql).bind(...fallbackBindings).all()).results || [];
-  }
-  const scored = rows
-    .filter((row) => matchesMandatoryIntent(row, intent))
-    .filter((row) => row.ai_status !== "completed" || !verificationForIntent(row.ai_canonical_json, intent, includeClaims).rejected)
-    .map((row) => candidateResponse(row, scoreCandidate(row, query, intent)))
-    .sort((a, b) => b.match_percent - a.match_percent || String(b.applied_at).localeCompare(String(a.applied_at)))
-    .slice(0, 40);
+  const execute = async (withFts) => {
+    const allConditions = [...conditions];
+    const allBindings = [...bindings];
+    const ftsJoin = withFts ? " JOIN candidates_fts ON candidates_fts.candidate_id=c.id" : "";
+    if (withFts) { allConditions.unshift("candidates_fts MATCH ?"); allBindings.unshift(ftsQuery); }
+    const whereSql = allConditions.length ? ` WHERE ${allConditions.join(" AND ")}` : "";
+    const tokens = (intent.tokens || []).slice(0, 18);
+    const tokenExpression = tokens.length ? tokens.map(() => "CASE WHEN c.search_text LIKE ? THEN 1 ELSE 0 END").join(" + ") : "0";
+    const rankBindings = tokens.map((token) => `%${token}%`);
+    const freshnessExpression = `CASE WHEN ?<=0 OR ?<=0 THEN 0 ELSE MAX(0, 10-(MAX(0,julianday('now')-julianday(c.applied_at))/?)*10)*? END`;
+    const fromSql = `FROM candidates c LEFT JOIN candidate_ai_profiles ai ON ai.candidate_id=c.id${ftsJoin}`;
+    const [totalRow, rows] = await Promise.all([
+      env.DB.prepare(`SELECT COUNT(*) AS count ${fromSql}${whereSql}`).bind(...allBindings).first(),
+      env.DB.prepare(`SELECT c.*, p.standardized_json, ai.status AS ai_status, ai.summary AS ai_summary,
+        ai.canonical_json AS ai_canonical_json, ai.processed_at AS ai_processed_at,
+        ((${tokenExpression})*20 + ${freshnessExpression}) AS search_rank
+        ${fromSql} LEFT JOIN candidate_profiles p ON p.candidate_id=c.id${whereSql}
+        ORDER BY search_rank DESC, c.applied_at DESC LIMIT ? OFFSET ?`)
+        .bind(...rankBindings, freshnessDecayDays, freshnessWeight, Math.max(1, freshnessDecayDays), freshnessWeight,
+          ...allBindings, pageSize, offset).all(),
+    ]);
+    return { total: Number(totalRow?.count || 0), rows: rows.results || [] };
+  };
+  let result = await execute(Boolean(ftsQuery));
+  if (!result.total && ftsQuery) result = await execute(false);
+  const scored = result.rows.map((row) => candidateResponse(row,
+    scoreCandidate(row, query, intent, Date.now(), { freshnessDecayDays, freshnessWeight })));
+  const evaluatedRow = await env.DB.prepare("SELECT COUNT(*) AS count FROM candidates").first();
   return json({
     candidates: scored,
-    total: scored.length,
+    total: result.total,
+    evaluated: Number(evaluatedRow?.count || 0),
+    page,
+    pageSize,
+    totalPages: Math.max(1, Math.ceil(result.total / pageSize)),
     understoodAs: describeIntent(intent),
     responseTimeMs: Date.now() - started,
-    mode: includeClaims ? "Indexed D1 search · AI profile type + verified evidence + claims" : "Indexed D1 search · AI profile type + verified evidence preferred",
+    mode: includeClaims ? "Entire repository · AI evidence + claims" : "Entire repository · verified résumé evidence preferred",
   });
 }
 
@@ -154,7 +206,7 @@ async function getMeta(env, user) {
     roleAtLeast(user.role, "Admin")
       ? env.DB.prepare("SELECT email, display_name, role, active FROM access_users WHERE active=1 ORDER BY role, display_name").all()
       : Promise.resolve({ results: [] }),
-    getAiMeta(env),
+    getAiMeta(env, roleAtLeast(user.role, "Admin")),
   ]);
   return json({
     repository: { ...(candidateCounts || {}), ...(employmentCounts || {}) },
@@ -164,8 +216,8 @@ async function getMeta(env, user) {
     users: users.results || [],
     ai,
     user,
-    pilot: !user.protected,
-    notice: user.protected ? "Private Vedantu workspace" : "Fictional data only · zero-cost Cloudflare pilot",
+    local: !user.protected,
+    notice: user.protected ? "Private Vedantu workspace" : "Local development workspace",
   });
 }
 
@@ -175,11 +227,16 @@ async function getCandidateHistory(candidateId, env) {
     FROM candidates c LEFT JOIN candidate_profiles p ON p.candidate_id = c.id
     LEFT JOIN candidate_ai_profiles ai ON ai.candidate_id = c.id WHERE c.id = ?`).bind(candidateId).first();
   if (!candidate) return json({ error: "Candidate not found" }, 404);
-  const [activity, calls] = await Promise.all([
+  const [activity, calls, applications] = await Promise.all([
     env.DB.prepare("SELECT * FROM activity_logs WHERE candidate_id = ? AND action <> 'called' ORDER BY created_at DESC LIMIT 50").bind(candidateId).all(),
     env.DB.prepare("SELECT * FROM calls WHERE candidate_id = ? ORDER BY created_at DESC LIMIT 30").bind(candidateId).all(),
+    env.DB.prepare(`SELECT sr.source_id, s.label AS source_label, sr.source_row_key, sr.applied_at,
+      sr.duplicate_kind, sr.first_seen_at, sr.updated_at,
+      CASE WHEN sr.applied_at=c.applied_at THEN 1 ELSE 0 END AS is_latest
+      FROM source_records sr JOIN sources s ON s.id=sr.source_id JOIN candidates c ON c.id=sr.candidate_id
+      WHERE sr.candidate_id=? ORDER BY sr.applied_at DESC, sr.updated_at DESC LIMIT 100`).bind(candidateId).all(),
   ]);
-  return json({ candidate: candidateResponse(candidate, 0), activity: activity.results || [], calls: calls.results || [] });
+  return json({ candidate: candidateResponse(candidate, 0), activity: activity.results || [], calls: calls.results || [], applications: applications.results || [] });
 }
 
 async function logCandidateEvent(env, candidateId, action, user) {
@@ -248,15 +305,35 @@ async function sessionResponse(env, user) {
   });
 }
 
-async function startAiPilot(request, env, user, ctx) {
+async function startAiBatch(request, env, user, ctx) {
   requireSecureAdmin(user, env);
-  if (!env.OPENAI_API_KEY) return json({ error: "Add OPENAI_API_KEY in Cloudflare before starting the résumé pilot" }, 409);
+  if (!env.OPENAI_API_KEY) return json({ error: "Add OPENAI_API_KEY in Cloudflare before starting résumé processing" }, 409);
   const payload = await request.json().catch(() => ({}));
-  const result = await enqueueAiPilot(env, payload.limit || 20);
-  await env.DB.prepare("INSERT INTO activity_logs(id, candidate_id, actor, action, detail, actor_email) VALUES (?, NULL, ?, 'ai_pilot_started', ?, ?)")
+  const result = await enqueueAiBatch(env, payload.limit || 20);
+  await env.DB.prepare("INSERT INTO activity_logs(id, candidate_id, actor, action, detail, actor_email) VALUES (?, NULL, ?, 'ai_batch_started', ?, ?)")
     .bind(crypto.randomUUID(), user.displayName, `${result.queued} résumés queued for evidence extraction`, clean(user.email, 320).toLowerCase()).run();
   if (ctx?.waitUntil) ctx.waitUntil(processAiEnrichment(env));
-  return json({ ok: true, ...result, message: result.queued ? "Résumé evidence pilot queued" : "These recent résumés are already current" }, 202);
+  return json({ ok: true, ...result, message: result.queued ? "Résumé evidence batch queued" : "These recent résumés are already current" }, 202);
+}
+
+async function retryAiJobs(request, env, user, ctx) {
+  requireSecureAdmin(user, env);
+  const payload = await request.json().catch(() => ({}));
+  const retried = await retryAiFailures(env, clean(payload.jobId, 100), Boolean(payload.retryableOnly));
+  await env.DB.prepare("INSERT INTO activity_logs(id, candidate_id, actor, action, detail, actor_email) VALUES (?, NULL, ?, 'ai_failures_retried', ?, ?)")
+    .bind(crypto.randomUUID(), user.displayName, `${retried} AI profile${retried === 1 ? "" : "s"} queued again`, clean(user.email, 320).toLowerCase()).run();
+  if (retried && ctx?.waitUntil) ctx.waitUntil(processAiEnrichment(env));
+  return json({ ok: true, retried }, retried ? 202 : 200);
+}
+
+async function updateAiAutomation(request, env, user, ctx) {
+  requireSecureAdmin(user, env);
+  const payload = await request.json().catch(() => ({}));
+  const automatic = await setAiAutomation(env, Boolean(payload.enabled), user);
+  await env.DB.prepare("INSERT INTO activity_logs(id, candidate_id, actor, action, detail, actor_email) VALUES (?, NULL, ?, 'ai_automation_changed', ?, ?)")
+    .bind(crypto.randomUUID(), user.displayName, automatic ? "Automatic résumé classification enabled" : "Automatic résumé classification paused", clean(user.email, 320).toLowerCase()).run();
+  if (automatic && ctx?.waitUntil) ctx.waitUntil(processAiEnrichment(env));
+  return json({ ok: true, automatic });
 }
 
 async function previewSource(request, env, user) {
@@ -409,7 +486,9 @@ async function routeApi(request, env, ctx) {
   if (request.method === "POST" && url.pathname === "/api/admin/sources/preview") return previewSource(request, env, user);
   if (request.method === "POST" && url.pathname === "/api/admin/sources") return createSource(request, env, user, ctx);
   if (request.method === "POST" && url.pathname === "/api/admin/users") return addAccessUser(request, env, user);
-  if (request.method === "POST" && url.pathname === "/api/admin/ai/pilot") return startAiPilot(request, env, user, ctx);
+  if (request.method === "POST" && url.pathname === "/api/admin/ai/batch") return startAiBatch(request, env, user, ctx);
+  if (request.method === "POST" && url.pathname === "/api/admin/ai/retry") return retryAiJobs(request, env, user, ctx);
+  if (request.method === "POST" && url.pathname === "/api/admin/ai/automation") return updateAiAutomation(request, env, user, ctx);
 
   const superadminCandidateMatch = url.pathname.match(/^\/api\/superadmin\/candidates\/([^/]+)$/);
   if (superadminCandidateMatch && request.method === "GET") return getSuperadminCandidate(env, user, decodeURIComponent(superadminCandidateMatch[1]));
@@ -447,6 +526,7 @@ export default {
   },
   async scheduled(_event, env, ctx) {
     ctx.waitUntil(processAiEnrichment(env));
+    ctx.waitUntil(backfillApplicationDates(env));
     const sources = await env.DB.prepare(`SELECT id FROM sources
       WHERE connected=1 AND id IN (SELECT source_id FROM source_connections)
       AND (last_sync <= datetime('now', '-15 minutes') OR EXISTS (

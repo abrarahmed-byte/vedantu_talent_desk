@@ -289,11 +289,11 @@ async function saveIdentities(env, candidateId, identities) {
   ).bind(identity.type, identity.value, candidateId)));
 }
 
-async function saveProfile(env, candidateId, details) {
+async function saveProfile(env, candidateId, details, isLatest = true) {
   const current = await env.DB.prepare("SELECT standardized_json FROM candidate_profiles WHERE candidate_id = ?").bind(candidateId).first();
   let existing = {};
   try { existing = JSON.parse(current?.standardized_json || "{}"); } catch { existing = {}; }
-  const merged = mergeStandardized(existing, details);
+  const merged = isLatest ? mergeStandardized(existing, details) : mergeStandardized(details, existing);
   await env.DB.prepare(
     "INSERT INTO candidate_profiles(candidate_id, standardized_json, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(candidate_id) DO UPDATE SET standardized_json = excluded.standardized_json, updated_at = CURRENT_TIMESTAMP",
   ).bind(candidateId, JSON.stringify(merged)).run();
@@ -310,7 +310,12 @@ async function insertCandidate(env, candidateId, canonicalKey, item, sourceLabel
       item.appliedAt, sourceLabel, item.resumeUrl, item.resumeSummary, item.searchText).run();
 }
 
-async function updateCandidate(env, candidateId, item, sourceLabel, incrementDuplicate) {
+async function updateCandidate(env, candidateId, item, sourceLabel, incrementDuplicate, isLatest = true) {
+  if (!isLatest) {
+    await env.DB.prepare("UPDATE candidates SET duplicate_count=duplicate_count+?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
+      .bind(incrementDuplicate ? 1 : 0, candidateId).run();
+    return;
+  }
   await env.DB.prepare(`UPDATE candidates SET
     name = COALESCE(NULLIF(?, ''), name), initials = COALESCE(NULLIF(?, ''), initials),
     track = COALESCE(NULLIF(?, ''), track), email = COALESCE(NULLIF(?, ''), email), phone = COALESCE(NULLIF(?, ''), phone),
@@ -319,7 +324,7 @@ async function updateCandidate(env, candidateId, item, sourceLabel, incrementDup
     boards_display = COALESCE(NULLIF(?, ''), boards_display), languages_display = COALESCE(NULLIF(?, ''), languages_display),
     education = COALESCE(NULLIF(?, ''), education), college = COALESCE(NULLIF(?, ''), college),
     experience_months = MAX(experience_months, ?), work_mode = COALESCE(NULLIF(?, ''), work_mode),
-    applied_at = MAX(applied_at, ?), source_sheet = COALESCE(NULLIF(source_sheet, ''), ?),
+    applied_at = MAX(applied_at, ?), source_sheet = COALESCE(NULLIF(?, ''), source_sheet),
     resume_url = COALESCE(NULLIF(?, ''), resume_url), resume_summary = COALESCE(NULLIF(?, ''), resume_summary),
     search_text = CASE WHEN ? <> '' THEN ? ELSE search_text END,
     duplicate_count = duplicate_count + ?, updated_at = CURRENT_TIMESTAMP
@@ -346,10 +351,14 @@ export async function importMappedRows(env, source, rows, mapping) {
       const rowKey = text(row._sheetRow || row.__rowNumber || `${item.appliedAt}:${item.email || item.phone}:${index}`, 400);
       const fingerprint = await hashRow(row);
       const sourceRecord = await env.DB.prepare(
-        "SELECT candidate_id, row_fingerprint, duplicate_kind FROM source_records WHERE source_id = ? AND source_row_key = ?",
+        "SELECT candidate_id, row_fingerprint, duplicate_kind, applied_at FROM source_records WHERE source_id = ? AND source_row_key = ?",
       ).bind(source.id, rowKey).first();
 
       if (sourceRecord?.row_fingerprint === fingerprint) {
+        if (!sourceRecord.applied_at || sourceRecord.applied_at.startsWith("1970-")) {
+          await env.DB.prepare("UPDATE source_records SET applied_at=?, updated_at=CURRENT_TIMESTAMP WHERE source_id=? AND source_row_key=?")
+            .bind(item.appliedAt, source.id, rowKey).run();
+        }
         stats.successful += 1;
         stats.skipped += 1;
         return;
@@ -357,6 +366,7 @@ export async function importMappedRows(env, source, rows, mapping) {
 
       let candidateId = sourceRecord?.candidate_id || await resolveCandidate(env, item.identities);
       const existed = Boolean(candidateId);
+      let isLatest = true;
       await withIdentityLocks(identityLocks, candidateId ? [{ type: "candidate", value: candidateId }] : [], async () => {
       let duplicateKind = sourceRecord?.duplicate_kind || "";
       if (!candidateId) {
@@ -365,6 +375,8 @@ export async function importMappedRows(env, source, rows, mapping) {
         await insertCandidate(env, candidateId, `${canonical.type}:${canonical.value}`, item, source.label);
         stats.imported += 1;
       } else {
+        const current = await env.DB.prepare("SELECT applied_at FROM candidates WHERE id=?").bind(candidateId).first();
+        isLatest = !current?.applied_at || item.appliedAt >= current.applied_at;
         let incrementDuplicate = false;
         if (!sourceRecord) {
           const sameSource = await env.DB.prepare("SELECT 1 AS found FROM source_records WHERE source_id = ? AND candidate_id = ? LIMIT 1")
@@ -377,19 +389,20 @@ export async function importMappedRows(env, source, rows, mapping) {
         } else {
           stats.updated += 1;
         }
-        await updateCandidate(env, candidateId, item, source.label, incrementDuplicate);
+        await updateCandidate(env, candidateId, item, source.label, incrementDuplicate, isLatest);
       }
 
       await saveIdentities(env, candidateId, item.identities);
-      await saveProfile(env, candidateId, item.details);
+      await saveProfile(env, candidateId, item.details, isLatest);
       await reconcileCandidateEmployment(env, candidateId, item.identities);
       await env.DB.prepare(`INSERT INTO source_records(
-        source_id, source_row_key, candidate_id, row_fingerprint, duplicate_kind, raw_json, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        source_id, source_row_key, candidate_id, row_fingerprint, duplicate_kind, raw_json, applied_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
       ON CONFLICT(source_id, source_row_key) DO UPDATE SET
         candidate_id = excluded.candidate_id, row_fingerprint = excluded.row_fingerprint,
-        duplicate_kind = excluded.duplicate_kind, raw_json = excluded.raw_json, updated_at = CURRENT_TIMESTAMP`)
-        .bind(source.id, rowKey, candidateId, fingerprint, duplicateKind, JSON.stringify(row)).run();
+        duplicate_kind = excluded.duplicate_kind, raw_json = excluded.raw_json, applied_at=excluded.applied_at,
+        updated_at = CURRENT_TIMESTAMP`)
+        .bind(source.id, rowKey, candidateId, fingerprint, duplicateKind, JSON.stringify(row), item.appliedAt).run();
       stats.successful += 1;
       if (existed && !sourceRecord && !duplicateKind) stats.merged += 1;
       });
@@ -516,6 +529,27 @@ export async function previewGoogleSheet(env, sheetUrl, tabName, headerRow = 1) 
   const normalizedHeaderRow = Math.max(1, Math.round(Number(headerRow) || 1));
   const result = await connectorRequest(env, { action: "preview", spreadsheetId, tabName: text(tabName, 200), headerRow: normalizedHeaderRow });
   return { spreadsheetId, tabName: result.tabName || tabName || "", headerRow: Number(result.headerRow) || normalizedHeaderRow, headers: result.headers || [], totalRows: Math.max(0, (Number(result.totalRows) || 0) - normalizedHeaderRow) };
+}
+
+export async function backfillApplicationDates(env, limit = 200) {
+  const records = (await env.DB.prepare(`SELECT sr.source_id, sr.source_row_key, sr.raw_json, sr.first_seen_at,
+    sc.mapping_json FROM source_records sr JOIN source_connections sc ON sc.source_id=sr.source_id
+    WHERE sr.applied_at='1970-01-01T00:00:00.000Z' ORDER BY sr.first_seen_at LIMIT ?`).bind(limit).all()).results || [];
+  if (!records.length) return 0;
+  const statements = records.map((record) => {
+    let row = {};
+    let mapping = {};
+    try { row = JSON.parse(record.raw_json || "{}"); } catch { row = {}; }
+    try { mapping = JSON.parse(record.mapping_json || "{}"); } catch { mapping = {}; }
+    const rawAppliedAt = mapping.appliedAt ? row[mapping.appliedAt] : "";
+    const appliedAt = isoDate(rawAppliedAt);
+    const usableDate = appliedAt.startsWith("1970-") ? isoDate(record.first_seen_at) : appliedAt;
+    return env.DB.prepare(`UPDATE source_records SET applied_at=?, updated_at=CURRENT_TIMESTAMP
+      WHERE source_id=? AND source_row_key=? AND applied_at='1970-01-01T00:00:00.000Z'`)
+      .bind(usableDate, record.source_id, record.source_row_key);
+  });
+  await env.DB.batch(statements);
+  return statements.length;
 }
 
 function addStats(total, next) {

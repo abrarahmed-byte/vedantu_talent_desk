@@ -112,7 +112,7 @@ function readResume_(payload) {
   }
   var bytes = blob.getBytes();
   var maxBytes = Math.min(8 * 1024 * 1024, Math.max(1024, Number(payload.maxBytes) || 5 * 1024 * 1024));
-  if (bytes.length > maxBytes) throw new Error('The resume is larger than the pilot file-size limit.');
+  if (bytes.length > maxBytes) throw new Error('The resume is larger than the processing file-size limit.');
   var mimeType = blob.getContentType() || MimeType.PDF;
   var updated = file.getLastUpdated();
   return {
@@ -123,6 +123,17 @@ function readResume_(payload) {
     fingerprint: fileId + ':' + (updated ? updated.toISOString() : '') + ':' + bytes.length,
     base64: Utilities.base64Encode(bytes)
   };
+}
+
+/**
+ * Run this once from the Apps Script editor as the deployment owner.
+ * It deliberately touches Drive and Sheets so Google shows the required
+ * authorization screen before background résumé processing begins.
+ */
+function authorizeTalentDeskAccess() {
+  DriveApp.getRootFolder().getName();
+  SpreadsheetApp.getActiveSpreadsheet();
+  return 'Talent Desk can read permitted Sheets and Google Drive résumés.';
 }
 
 function doGet() {

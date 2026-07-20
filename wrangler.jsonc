@@ -7,7 +7,7 @@
   "keep_vars": true,
   "vars": {
     "AUTH_MODE": "cloudflare-access",
-    "ALLOW_PILOT_SOURCE_SYNC": "false",
+    "ALLOW_LOCAL_SOURCE_SYNC": "false",
     "AI_MODEL": "gpt-5-nano",
     "AI_BATCH_SIZE": "20",
     "AI_PREPARE_PER_RUN": "4",

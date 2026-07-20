@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildBatchJsonl, extractResponseText, profileClassification, verificationForIntent } from "../src/ai.js";
+import { buildBatchJsonl, classifyAiFailure, extractResponseText, profileClassification, verificationForIntent } from "../src/ai.js";
 
 test("batch lines use Responses, stored resume files and strict structured output", () => {
   const jsonl = buildBatchJsonl([{
@@ -65,4 +65,11 @@ test("resume classification remains separate from the source-sheet category", ()
   assert.equal(classification.recommendedTrack, "Non-teaching");
   assert.equal(classification.effectiveTrack, "Non-teaching");
   assert.equal(classification.disagreesWithSource, true);
+});
+
+test("AI failures distinguish automatic retries from human-fix issues", () => {
+  assert.equal(classifyAiFailure("failed", "OpenAI batch expired").autoRetry, true);
+  assert.equal(classifyAiFailure("no_resume", "Drive permission denied").autoRetry, false);
+  assert.equal(classifyAiFailure("failed", "Project does not have access to model").category, "OpenAI setup");
+  assert.equal(classifyAiFailure("no_resume", "You do not have permission to call DriveApp.getFileById").category, "Connector authorization");
 });

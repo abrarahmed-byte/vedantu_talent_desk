@@ -22,10 +22,10 @@ The asynchronous AI workflow processes up to 20 new profiles per batch. It reads
 
 The recommendation is a routing aid, not a hiring decision. Teaching requires direct resume evidence such as instruction, tutoring, faculty work, lesson delivery, or student assessment. Subject knowledge or a selected form option alone is not enough. Unsupported form claims remain visible as `claim_only` rather than being treated as false.
 
-1. Apply all D1 migrations, including `0005_ai_enrichment.sql` and `0006_superadmin.sql`.
+1. Apply all D1 migrations, including `0007_ai_operations.sql`.
 2. Deploy the current Apps Script connector so the Worker can securely read resume files.
 3. Add `OPENAI_API_KEY` as an encrypted Cloudflare Worker secret. `AI_MODEL` defaults to `gpt-5-nano`.
-4. Open **Sources** and select **Classify next 20 profiles**.
+4. Open **Sources** and select **Classify next 20 profiles**, or enable automatic background classification.
 5. Monitor queued, processing, classified, and needs-attention totals without blocking search or source sync.
 
 OpenAI Batch files and temporary resume uploads are deleted after the structured result is stored. Obtain Vedantu approval before processing production candidate data with an external AI provider.

@@ -20,6 +20,40 @@ test("intent parser understands track, location, grades, language and experience
   assert.equal(intent.minimumExperienceMonths, 48);
 });
 
+test("Indian states are parsed and enforced as mandatory locations", () => {
+  const intent = parseSearchIntent("JEE Physics teacher in Telangana");
+  assert.deepEqual(intent.locations, ["Telangana"]);
+  assert.equal(matchesMandatoryIntent({
+    track: "Teacher", subject_display: "Physics", grades_display: "JEE Main", city: "Hyderabad", state: "Telangana",
+    languages_display: "English", experience_months: 48,
+  }, intent), true);
+  assert.equal(matchesMandatoryIntent({
+    track: "Teacher", subject_display: "Physics", grades_display: "JEE Main", city: "Kochi", state: "Kerala",
+    languages_display: "English", experience_months: 48,
+  }, intent), false);
+});
+
+test("location aliases and smaller contextually named cities match canonical fields", () => {
+  const bengaluru = parseSearchIntent("Maths teacher in Bangalore");
+  assert.deepEqual(bengaluru.locations, ["Bengaluru"]);
+  assert.equal(matchesMandatoryIntent({ track: "Teacher", subject_display: "Mathematics", city: "Bangalore", state: "Karnataka", grades_display: "", languages_display: "", experience_months: 0 }, bengaluru), true);
+  const tirupati = parseSearchIntent("teacher based in Tirupati");
+  assert.ok(tirupati.locations.includes("Tirupati"));
+  assert.equal(matchesMandatoryIntent({ track: "Teacher", subject_display: "", city: "Tirupati", state: "Andhra Pradesh", grades_display: "", languages_display: "", experience_months: 0 }, tirupati), true);
+});
+
+test("skills and exam phrases are not mistaken for locations", () => {
+  assert.deepEqual(parseSearchIntent("Physics teacher experienced in JEE").locations, []);
+  assert.deepEqual(parseSearchIntent("candidate proficient in Python").locations, []);
+});
+
+test("six-digit pin codes are parsed and enforced", () => {
+  const intent = parseSearchIntent("teacher in Hyderabad 500032");
+  assert.deepEqual(intent.pincodes, ["500032"]);
+  assert.equal(matchesMandatoryIntent({ track: "Teacher", subject_display: "", city: "Hyderabad", state: "Telangana", grades_display: "", languages_display: "", experience_months: 0, search_text: "Hyderabad Telangana 500032" }, intent), true);
+  assert.equal(matchesMandatoryIntent({ track: "Teacher", subject_display: "", city: "Hyderabad", state: "Telangana", grades_display: "", languages_display: "", experience_months: 0, search_text: "Hyderabad Telangana 500081" }, intent), false);
+});
+
 test("relevance and freshness produce a transparent bounded score", () => {
   const intent = parseSearchIntent("fresh physics teacher, Hindi, grades 11-12");
   const candidate = {

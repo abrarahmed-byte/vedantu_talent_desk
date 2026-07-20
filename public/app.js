@@ -3,6 +3,10 @@ const state = {
   page: "discover",
   track: "All",
   candidates: [],
+  searchPage: 1,
+  searchTotal: 0,
+  searchPageSize: 40,
+  searchTotalPages: 1,
   meta: null,
   selected: null,
   toastTimer: null,
@@ -79,13 +83,13 @@ async function loadSession() {
   $("heroUserName").textContent = `${firstName}.`;
   $("signedUserInitials").textContent = initials(user.displayName);
   $("signedUserName").textContent = user.displayName || "Talent Desk user";
-  $("signedUserRole").textContent = `${user.role || "Recruiter"} · ${user.protected ? "Vedantu workspace" : "fictional pilot"}`;
-  $("topbarRole").textContent = user.protected ? user.role : `${user.role || "Admin"} pilot`;
+  $("signedUserRole").textContent = `${user.role || "Recruiter"} · ${user.protected ? "Vedantu workspace" : "local workspace"}`;
+  $("topbarRole").textContent = user.protected ? user.role : `${user.role || "Admin"} local`;
   $("superadminNav").classList.toggle("hidden", !state.session.isSuperadmin);
   $("superadminRoleOption").classList.toggle("hidden", !state.session.isSuperadmin);
   if (user.protected) {
-    $("pilotRibbonTitle").textContent = "VEDANTU PRIVATE PILOT";
-    $("pilotRibbonText").textContent = "Access-controlled workspace · recruitment data stays inside approved accounts";
+    $("workspaceRibbonTitle").textContent = "VEDANTU TALENT DESK";
+    $("workspaceRibbonText").textContent = "Access-controlled workspace · recruitment data stays inside approved accounts";
     $("healthProfileLabel").textContent = "repository profiles";
     $("heroRecordLabel").textContent = "central repository records";
     $("activitySafeNote").innerHTML = "<i></i>Server-attributed workspace audit trail.";
@@ -94,7 +98,7 @@ async function loadSession() {
   $("connectSource").disabled = !enabled;
   $("connectEmploymentSource").disabled = !enabled;
   $("addRecruiter").disabled = !enabled;
-  $("startAiPilot").disabled = !enabled || !state.session.aiConfigured;
+  $("startAiBatch").disabled = !enabled || !state.session.aiConfigured;
   const banner = $("readinessBanner");
   if (!user.protected) {
     banner.className = "readiness-banner warning";
@@ -155,7 +159,7 @@ function profileTypeInfo(candidate) {
 function renderCandidates() {
   const list = $("candidateList");
   if (!state.candidates.length) {
-    list.innerHTML = `<div class="empty-state"><h3>No fictional profiles match every filter</h3><p>Try clearing a filter or using fewer requirements.</p><button class="outline-button" id="emptyClear">Clear filters</button></div>`;
+    list.innerHTML = `<div class="empty-state"><h3>No profiles match every filter</h3><p>Try clearing a filter or using fewer requirements.</p><button class="outline-button" id="emptyClear">Clear filters</button></div>`;
     $("emptyClear").onclick = clearFilters;
     return;
   }
@@ -169,7 +173,7 @@ function renderCandidates() {
         <button data-open-profile="${escapeHtml(candidate.id)}">
           <b>${escapeHtml(candidate.name)}</b>
           <span>${escapeHtml([candidate.city, candidate.state].filter(Boolean).join(", "))} · ${escapeHtml(candidate.phone)}</span>
-          <small>Applied ${escapeHtml(formatDate(candidate.applied_at))} · ${escapeHtml(candidate.source_sheet)}</small>
+          <small>Latest application ${escapeHtml(formatDate(candidate.applied_at))} · ${escapeHtml(candidate.source_sheet)}</small>
         </button>
       </div>
       <div class="profile-fit">
@@ -191,7 +195,35 @@ function renderCandidates() {
   document.querySelectorAll("[data-call]").forEach((button) => button.onclick = () => openCallModal(button.dataset.call));
 }
 
-async function runSearch(logSearch = true) {
+function renderSearchPager() {
+  const pager = $("resultPager");
+  const totalPages = state.searchTotalPages;
+  if (totalPages <= 1) {
+    pager.classList.add("hidden");
+    pager.innerHTML = "";
+    return;
+  }
+  const page = state.searchPage;
+  const pageNumbers = [...new Set([1, page - 1, page, page + 1, totalPages])]
+    .filter((value) => value >= 1 && value <= totalPages)
+    .sort((a, b) => a - b);
+  let previous = 0;
+  const numbered = pageNumbers.map((value) => {
+    const gap = previous && value > previous + 1 ? `<span class="pager-gap">…</span>` : "";
+    previous = value;
+    return `${gap}<button class="${value === page ? "active" : ""}" data-search-page="${value}" aria-label="Page ${value}" ${value === page ? 'aria-current="page"' : ""}>${value}</button>`;
+  }).join("");
+  pager.innerHTML = `<button data-search-page="${page - 1}" ${page === 1 ? "disabled" : ""}>← Previous</button><div>${numbered}</div><button data-search-page="${page + 1}" ${page === totalPages ? "disabled" : ""}>Next →</button>`;
+  pager.classList.remove("hidden");
+  pager.querySelectorAll("[data-search-page]").forEach((button) => button.onclick = () => {
+    if (button.disabled) return;
+    runSearch(false, Number(button.dataset.searchPage));
+    document.querySelector(".results-heading")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+
+async function runSearch(logSearch = true, page = 1) {
+  const [freshnessWeight, freshnessDecayDays] = $("freshnessFilter").value.split(":");
   const params = new URLSearchParams({
     q: $("searchInput").value.trim(),
     track: state.track,
@@ -199,6 +231,13 @@ async function runSearch(logSearch = true) {
     language: $("languageFilter").value,
     experience: $("experienceFilter").value,
     workMode: $("workModeFilter").value,
+    minViews: $("minViewsFilter").value,
+    minCalls: $("minCallsFilter").value,
+    maxAgeDays: $("maxAgeFilter").value,
+    freshnessWeight,
+    freshnessDecayDays,
+    page: String(page),
+    pageSize: String(state.searchPageSize),
     includeClaims: $("includeClaims").checked ? "1" : "0",
   });
   $("searchButton").disabled = true;
@@ -206,17 +245,27 @@ async function runSearch(logSearch = true) {
   try {
     const result = await api(`/api/candidates?${params}`);
     state.candidates = result.candidates || [];
+    state.searchPage = Number(result.page) || 1;
+    state.searchTotal = Number(result.total) || 0;
+    state.searchPageSize = Number(result.pageSize) || 40;
+    state.searchTotalPages = Number(result.totalPages) || 1;
     renderCandidates();
-    $("resultSummary").textContent = `${result.total} matches · ${result.mode}`;
+    renderSearchPager();
+    const first = state.searchTotal ? (state.searchPage - 1) * state.searchPageSize + 1 : 0;
+    const last = Math.min(state.searchPage * state.searchPageSize, state.searchTotal);
+    $("resultSummary").textContent = `Showing ${first}–${last} of ${state.searchTotal} matches · filtered across all ${Number(result.evaluated) || 0} repository profiles`;
+    $("freshnessNote").textContent = Number(freshnessWeight) ? `Relevance + ${freshnessDecayDays}-day freshness decay` : "Relevance only · freshness off";
     $("latency").textContent = `Results in ${result.responseTimeMs} ms`;
     const hasSearchContext = Boolean($("searchInput").value.trim()) || state.track !== "All"
       || $("subjectFilter").value !== "All subjects" || $("languageFilter").value !== "All languages"
-      || $("experienceFilter").value !== "0" || $("workModeFilter").value !== "Any work mode";
+      || $("experienceFilter").value !== "0" || $("workModeFilter").value !== "Any work mode"
+      || $("minViewsFilter").value !== "0" || $("minCallsFilter").value !== "0"
+      || $("maxAgeFilter").value !== "0" || $("freshnessFilter").value !== "1:120";
     $("understood").classList.toggle("show", hasSearchContext);
     if (hasSearchContext) $("understood").querySelector("p").textContent = `Understood as: ${result.understoodAs}`;
     if (logSearch && $("searchInput").value.trim()) api("/api/searches", { method: "POST", body: JSON.stringify({ query: $("searchInput").value.trim() }) }).catch(() => {});
   } catch (error) {
-    $("candidateList").innerHTML = `<div class="empty-state"><h3>The pilot database could not be reached</h3><p>${escapeHtml(error.message)}</p></div>`;
+    $("candidateList").innerHTML = `<div class="empty-state"><h3>The repository could not be reached</h3><p>${escapeHtml(error.message)}</p></div>`;
     $("resultSummary").textContent = "Database check required";
   } finally {
     $("searchButton").disabled = false;
@@ -232,6 +281,10 @@ function clearFilters() {
   $("languageFilter").value = "All languages";
   $("experienceFilter").value = "0";
   $("workModeFilter").value = "Any work mode";
+  $("minViewsFilter").value = "0";
+  $("minCallsFilter").value = "0";
+  $("maxAgeFilter").value = "0";
+  $("freshnessFilter").value = "1:120";
   $("includeClaims").checked = false;
   runSearch(false);
 }
@@ -276,6 +329,13 @@ function historyEntry(entry) {
   return `<div class="history-entry"><span class="avatar purple">${escapeHtml(initials(actor))}</span><div><p><b>${escapeHtml(actor)}</b> · ${escapeHtml((entry.action || "called").replaceAll("_", " "))}</p><small>${escapeHtml(detail)}</small></div><time>${escapeHtml(formatDate(entry.created_at, true))}</time></div>`;
 }
 
+function applicationEntry(entry) {
+  const date = entry.applied_at && !String(entry.applied_at).startsWith("1970-")
+    ? formatDate(entry.applied_at, true)
+    : `First synchronized ${formatDate(entry.first_seen_at, true)}`;
+  return `<article class="application-entry"><div><b>${escapeHtml(entry.source_label)}</b><small>${escapeHtml(date)} · source row ${escapeHtml(entry.source_row_key)}</small></div>${Number(entry.is_latest) ? '<span>Most recent</span>' : '<span class="previous">Previous</span>'}</article>`;
+}
+
 async function openCandidate(candidateId, focus = "profile") {
   $("profileBackdrop").classList.remove("hidden");
   $("drawerName").textContent = "Loading profile…";
@@ -290,13 +350,15 @@ async function openCandidate(candidateId, focus = "profile") {
     $("drawerName").textContent = candidate.name;
     const activity = [...(result.activity || []), ...(result.calls || []).map((call) => ({ ...call, action: "called", actor: call.recruiter, detail: `${call.outcome} · ${call.role}${call.note ? ` · ${call.note}` : ""}` }))]
       .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    const applications = result.applications || [];
     $("drawerContent").innerHTML = `
-      <div class="drawer-hero"><span class="avatar xlarge ${profileType.effective === "Teacher" ? "orange" : "purple"}">${escapeHtml(candidate.initials)}</span><div><h2>${escapeHtml(candidate.name)}</h2><p>${escapeHtml(candidate.role)}</p><small>${escapeHtml(candidate.city)}, ${escapeHtml(candidate.state)} · ${escapeHtml(candidate.work_mode)}</small></div><div class="drawer-score"><b>${candidate.match_percent}%</b><span>pilot match</span></div></div>
+      <div class="drawer-hero"><span class="avatar xlarge ${profileType.effective === "Teacher" ? "orange" : "purple"}">${escapeHtml(candidate.initials)}</span><div><h2>${escapeHtml(candidate.name)}</h2><p>${escapeHtml(candidate.role)}</p><small>${escapeHtml(candidate.city)}, ${escapeHtml(candidate.state)} · ${escapeHtml(candidate.work_mode)}</small></div><div class="drawer-score"><b>${candidate.match_percent}%</b><span>profile match</span></div></div>
       <div class="drawer-actions"><button class="primary-button" id="drawerResume">Resume preview</button><button class="outline-button" id="drawerCall">I called this profile</button><button class="outline-button" id="drawerHistory">View Log History</button></div>
       <section class="drawer-section"><h3>Candidate information</h3><div class="fact-grid">${fact("Applied", formatDate(candidate.applied_at, true))}${fact("Location", `${candidate.city}, ${candidate.state}`)}${fact("Phone", candidate.phone)}${fact("Email", candidate.email)}${fact("Source Sheet", candidate.source_sheet)}${fact("Work mode", candidate.work_mode)}</div></section>
       <section class="drawer-section"><h3>${profileType.effective === "Teacher" ? "Teaching profile" : "Professional profile"}</h3><div class="fact-grid">${fact("AI profile recommendation", profileType.reviewed ? profileType.label : "Awaiting résumé classification")}${fact("Source category", candidate.track)}${fact("Subject / function", candidate.subject_display)}${fact("Grades / levels", candidate.grades_display)}${fact("Boards", candidate.boards_display || "Not applicable")}${fact("Languages", candidate.languages_display)}${fact("Experience", `${candidate.experience_months} months`)}${fact("Education", `${candidate.education} · ${candidate.college}`)}</div></section>
       ${aiEvidenceSection(candidate)}
       ${additionalFacts(candidate)}
+      <section class="drawer-section"><h3>Application history</h3><p class="section-note">Every application remains linked to this one candidate profile. Freshness and the primary source use the latest application date.</p>${applications.length ? applications.map(applicationEntry).join("") : "<p>No source-row history is available yet.</p>"}</section>
       <section class="drawer-section"><h3>Employment and duplicate checks</h3><div class="fact-grid">${fact("Employment status", candidate.employment_status)}${fact("Times hired", candidate.employment_times_hired)}${fact("Duplicate source rows merged", candidate.duplicate_count)}${fact("Canonical identity", "Email / phone exact match")}</div></section>
       <section class="drawer-section hidden" id="resumeSection"><h3>Resume</h3><div class="resume-preview">${escapeHtml(candidate.resume_summary || "Resume link captured from the source Sheet.")}</div>${safeExternalUrl(candidate.resume_url) ? `<a class="resume-link" href="${escapeHtml(safeExternalUrl(candidate.resume_url))}" target="_blank" rel="noopener">Open resume in Google Drive ↗</a>` : ""}</section>
       <section class="drawer-section" id="historySection"><h3>View and call history</h3>${activity.length ? activity.map(historyEntry).join("") : "<p>No activity yet.</p>"}</section>`;
@@ -332,7 +394,7 @@ function openCallModal(candidateId) {
   const candidate = state.candidates.find((item) => item.id === candidateId) || state.selected;
   if (!candidate) return;
   state.selected = candidate;
-  $("callCandidateName").textContent = `${candidate.name}${state.session?.user?.protected ? "" : " · fictional pilot profile"}`;
+  $("callCandidateName").textContent = candidate.name;
   $("callRole").value = candidate.role || "";
   $("callOutcome").value = "";
   $("callNote").value = "";
@@ -382,7 +444,7 @@ function renderMeta() {
     const fourthValue = employmentSource ? Number(source.matched_rows) || 0 : Number(source.duplicate_rows) || 0;
     const fourthLabel = employmentSource ? "profiles matched" : "duplicates";
     const sheetLink = safeExternalUrl(source.sheet_url);
-    return `<article class="source-card"><header><h3>${escapeHtml(source.label)}</h3><span class="status-${escapeHtml(String(source.status).toLowerCase())}">● ${escapeHtml(source.status)}</span></header><p>${escapeHtml(source.kind)}${connectedSheet ? ` · ${escapeHtml(source.tab_name || "first tab")}` : " · fictional pilot connector"}</p>${sheetLink ? `<a class="source-sheet-link" href="${escapeHtml(sheetLink)}" title="${escapeHtml(sheetLink)}" target="_blank" rel="noopener">${escapeHtml(sheetLink)}</a>` : ""}<div class="source-stats"><div><b>${source.total_rows}</b><small>source rows</small></div><div><b>${source.synced_rows}</b><small>${employmentSource ? "checked" : "synced"}</small></div><div><b>${source.failed_rows}</b><small>failed</small></div><div><b>${fourthValue}</b><small>${fourthLabel}</small></div></div><footer><span>${source.connected ? "Connected" : "Disconnected"}</span><span>Last sync ${escapeHtml(formatDate(source.last_sync, true))}</span></footer>${connectedSheet && canManage ? `<div class="source-actions"><button class="text-button" data-source-action="sync" data-source-id="${escapeHtml(source.id)}">Sync now</button><button class="text-button" data-source-action="${action}" data-source-id="${escapeHtml(source.id)}">${action === "disconnect" ? "Disconnect" : "Reconnect"}</button></div>` : ""}${source.last_error ? `<p class="source-error">${escapeHtml(source.last_error)}</p>` : ""}</article>`;
+    return `<article class="source-card"><header><h3>${escapeHtml(source.label)}</h3><span class="status-${escapeHtml(String(source.status).toLowerCase())}">● ${escapeHtml(source.status)}</span></header><p>${escapeHtml(source.kind)}${connectedSheet ? ` · ${escapeHtml(source.tab_name || "first tab")}` : ""}</p>${sheetLink ? `<a class="source-sheet-link" href="${escapeHtml(sheetLink)}" title="${escapeHtml(sheetLink)}" target="_blank" rel="noopener">${escapeHtml(sheetLink)}</a>` : ""}<div class="source-stats"><div><b>${source.total_rows}</b><small>source rows</small></div><div><b>${source.synced_rows}</b><small>${employmentSource ? "checked" : "synced"}</small></div><div><b>${source.failed_rows}</b><small>failed</small></div><div><b>${fourthValue}</b><small>${fourthLabel}</small></div></div><footer><span>${source.connected ? "Connected" : "Disconnected"}</span><span>Last sync ${escapeHtml(formatDate(source.last_sync, true))}</span></footer>${connectedSheet && canManage ? `<div class="source-actions"><button class="text-button" data-source-action="sync" data-source-id="${escapeHtml(source.id)}">Sync now</button><button class="text-button" data-source-action="${action}" data-source-id="${escapeHtml(source.id)}">${action === "disconnect" ? "Disconnect" : "Reconnect"}</button></div>` : ""}${source.last_error ? `<p class="source-error">${escapeHtml(source.last_error)}</p>` : ""}</article>`;
   };
   const hiringSources = (state.meta.sources || []).filter((source) => source.kind !== "Employment master");
   const employmentSources = (state.meta.sources || []).filter((source) => source.kind === "Employment master");
@@ -403,8 +465,24 @@ function renderMeta() {
   const aiStage = !ai.configured ? "Setup required" : Number(aiCounts.processing) ? "OpenAI batch processing" : Number(aiCounts.queued) ? "Preparing résumé files" : aiTotal ? "Ready for the next batch" : "Ready for classification";
   const aiEta = Number(aiCounts.processing) ? "Often faster, but allow up to 24 hours" : Number(aiCounts.queued) ? "Progress updates automatically every minute" : "Search remains instant while this runs";
   $("aiPipeline").innerHTML = `<div class="ai-pipeline-copy"><span class="ai-orb">✦</span><div><b>${escapeHtml(aiStage)}</b><p>${ai.configured ? `${escapeHtml(ai.model)} · 50% Batch API discount · up to ${escapeHtml(ai.batchSize)} profiles per batch` : "Add the OpenAI API key in Cloudflare. No key is sent to the browser."}</p><small>${escapeHtml(aiEta)}${latestBatch ? ` · latest batch: ${escapeHtml(String(latestBatch.status).replaceAll("_", " "))}` : ""}</small></div></div><div class="ai-progress"><div><span>Queued <b>${Number(aiCounts.queued) || 0}</b></span><span>Processing <b>${Number(aiCounts.processing) || 0}</b></span><span>Classified <b>${Number(aiCounts.completed) || 0}</b></span><span>Needs attention <b>${Number(aiCounts.failed) || 0}</b></span></div><div class="progress"><i style="width:${aiPercent}%"></i></div><small>${aiDone} of ${aiTotal || 0} profiles finished · ${aiPercent}%</small></div>`;
-  $("startAiPilot").disabled = !canManage || !ai.configured || Number(aiCounts.queued) > 0 || Number(aiCounts.processing) > 0;
-  $("startAiPilot").textContent = "Classify next 20 profiles";
+  $("startAiBatch").disabled = !canManage || !ai.configured || Number(aiCounts.queued) > 0 || Number(aiCounts.processing) > 0;
+  $("startAiBatch").textContent = "Classify next 20 profiles";
+  $("aiOperations").classList.toggle("hidden", !canManage);
+  if (canManage) {
+    $("aiAutomation").checked = Boolean(ai.automatic);
+    $("aiAutomation").disabled = !ai.configured;
+    $("aiAutomationLabel").textContent = ai.automatic ? "Running" : "Paused";
+    const failures = ai.failures || [];
+    $("aiFailurePanel").classList.toggle("hidden", !failures.length);
+    $("aiFailureSummary").textContent = failures.length
+      ? `${failures.length} recent failure${failures.length === 1 ? "" : "s"} shown. Temporary service issues retry automatically up to three attempts.`
+      : "No profiles currently need attention.";
+    $("retryTemporaryAi").disabled = !failures.some((failure) => failure.autoRetry);
+    $("retryAllAi").disabled = !failures.length;
+    $("aiFailureList").innerHTML = failures.map((failure) => `<article><div><b>${escapeHtml(failure.candidate_name)}</b><small>${escapeHtml(failure.source_sheet)} · ${escapeHtml(failure.category)} · attempt ${Number(failure.attempt_count) || 0}</small><p>${escapeHtml(failure.error_message || "No detailed error was returned.")}</p><em>${escapeHtml(failure.guidance)}</em></div><div><button class="text-button" data-ai-profile="${escapeHtml(failure.candidate_id)}">Open profile</button><button class="outline-button" data-ai-retry="${escapeHtml(failure.id)}">Retry</button></div></article>`).join("");
+    document.querySelectorAll("[data-ai-profile]").forEach((button) => button.onclick = () => openCandidate(button.dataset.aiProfile));
+    document.querySelectorAll("[data-ai-retry]").forEach((button) => button.onclick = () => retryAiFailure(button.dataset.aiRetry));
+  }
   $("accessList").innerHTML = (state.meta.users || []).map((user) => {
     const canRevoke = canManage && user.email !== state.session?.user?.email;
     return `<div class="access-row"><div><b>${escapeHtml(user.display_name)}</b><small>${escapeHtml(user.email)}</small></div><span class="role-pill">${escapeHtml(user.role)}</span><span>${user.active ? "Active" : "Disabled"}</span>${canRevoke ? `<button class="remove-access" data-revoke-user="${escapeHtml(user.email)}" data-revoke-name="${escapeHtml(user.display_name)}">Remove access</button>` : "<span></span>"}</div>`;
@@ -532,7 +610,7 @@ async function loadMeta() {
     renderMeta();
     resumeQueuedSync();
   } catch (error) {
-    if (state.page !== "discover") toast(`Pilot health unavailable: ${error.message}`);
+    if (state.page !== "discover") toast(`Repository health unavailable: ${error.message}`);
   }
 }
 
@@ -679,17 +757,38 @@ async function manageSource(sourceId, action) {
   } catch (error) { toast(error.message); }
 }
 
-async function startAiPilot() {
+async function startAiBatch() {
   if (!window.confirm("Classify the next 20 unprocessed profiles? Their application rows and résumés will be sent to OpenAI in a discounted background batch.")) return;
-  const button = $("startAiPilot");
+  const button = $("startAiBatch");
   button.disabled = true;
-  button.textContent = "Queuing pilot…";
+  button.textContent = "Queuing batch…";
   try {
-    const result = await api("/api/admin/ai/pilot", { method: "POST", body: JSON.stringify({ limit: 20 }) });
+    const result = await api("/api/admin/ai/batch", { method: "POST", body: JSON.stringify({ limit: 20 }) });
     toast(result.queued ? `${result.queued} profiles queued for résumé classification · you can keep using Talent Desk` : result.message);
     await loadMeta();
   } catch (error) { toast(error.message); }
   finally { button.textContent = "Classify next 20 profiles"; }
+}
+
+async function retryAiFailure(jobId = "", retryableOnly = false) {
+  try {
+    const result = await api("/api/admin/ai/retry", { method: "POST", body: JSON.stringify({ jobId, retryableOnly }) });
+    toast(result.retried ? `${result.retried} profile${result.retried === 1 ? "" : "s"} queued again` : "No eligible failures to retry");
+    await loadMeta();
+  } catch (error) { toast(error.message); }
+}
+
+async function changeAiAutomation() {
+  const enabled = $("aiAutomation").checked;
+  $("aiAutomation").disabled = true;
+  try {
+    const result = await api("/api/admin/ai/automation", { method: "POST", body: JSON.stringify({ enabled }) });
+    toast(result.automatic ? "New profiles will classify automatically in background batches" : "Automatic classification paused");
+    await loadMeta();
+  } catch (error) {
+    $("aiAutomation").checked = !enabled;
+    toast(error.message);
+  } finally { $("aiAutomation").disabled = false; }
 }
 
 function openUserModal() {
@@ -734,10 +833,10 @@ document.querySelectorAll("[data-track]").forEach((button) => button.onclick = (
 });
 $("searchButton").onclick = () => runSearch(true);
 $("searchInput").addEventListener("keydown", (event) => { if (event.key === "Enter") runSearch(true); });
-["subjectFilter", "languageFilter", "experienceFilter", "workModeFilter"].forEach((id) => $(id).addEventListener("change", () => runSearch(false)));
+["subjectFilter", "languageFilter", "experienceFilter", "workModeFilter", "minViewsFilter", "minCallsFilter", "maxAgeFilter", "freshnessFilter"].forEach((id) => $(id).addEventListener("change", () => runSearch(false, 1)));
 $("includeClaims").addEventListener("change", () => runSearch(false));
 $("clearFilters").onclick = clearFilters;
-$("refreshMeta").onclick = () => loadMeta().then(() => toast("Pilot health refreshed"));
+$("refreshMeta").onclick = () => loadMeta().then(() => toast("Repository health refreshed"));
 $("refreshActivity").onclick = () => loadMeta().then(() => toast("Activity log refreshed"));
 $("refreshSuperadmin").onclick = () => loadSuperadmin(state.superadminPage).then(() => toast("Superadmin reports refreshed"));
 $("runSuperadminSearch").onclick = () => loadSuperadmin(1);
@@ -745,7 +844,10 @@ $("superadminSearch").addEventListener("keydown", (event) => { if (event.key ===
 document.querySelectorAll("[data-admin-export]").forEach((button) => button.onclick = () => downloadSuperadminReport(button.dataset.adminExport));
 $("connectSource").onclick = () => openSourceModal("candidate");
 $("connectEmploymentSource").onclick = () => openSourceModal("employment");
-$("startAiPilot").onclick = startAiPilot;
+$("startAiBatch").onclick = startAiBatch;
+$("aiAutomation").addEventListener("change", changeAiAutomation);
+$("retryTemporaryAi").onclick = () => retryAiFailure("", true);
+$("retryAllAi").onclick = () => retryAiFailure("", false);
 $("addRecruiter").onclick = openUserModal;
 $("readColumns").onclick = readSourceColumns;
 $("sourceForm").addEventListener("submit", saveSource);

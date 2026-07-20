@@ -96,11 +96,11 @@ export async function verifyAccessJwt(token, env) {
 }
 
 export async function authenticate(request, env) {
-  const authMode = String(env.AUTH_MODE || "pilot").toLowerCase();
+  const authMode = String(env.AUTH_MODE || "local").toLowerCase();
   const protectedMode = authMode === "cloudflare-access";
   const email = protectedMode
     ? (await verifyAccessJwt(request.headers.get("cf-access-jwt-assertion"), env)).email
-    : "pilot.admin@example.com";
+    : "local.admin@example.com";
 
   if (!email) throw new AuthError("Sign in with your Vedantu account to continue", 401);
 
@@ -109,10 +109,10 @@ export async function authenticate(request, env) {
   ).bind(email).first();
 
   if (!user || !Number(user.active)) {
-    if (!protectedMode && email === "pilot.admin@example.com") {
+    if (!protectedMode && email === "local.admin@example.com") {
       return {
         email,
-        displayName: "Pilot Admin",
+        displayName: "Local Admin",
         role: "Admin",
         authMode,
         protected: false,
@@ -137,7 +137,7 @@ export function requireRole(user, role) {
 }
 
 export function canManageSources(user, env) {
-  return roleAtLeast(user?.role, "Admin") && (user.protected || String(env.ALLOW_PILOT_SOURCE_SYNC || "false") === "true");
+  return roleAtLeast(user?.role, "Admin") && (user.protected || String(env.ALLOW_LOCAL_SOURCE_SYNC || "false") === "true");
 }
 
 export function roleAtLeast(currentRole, requiredRole) {

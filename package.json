@@ -1,13 +1,13 @@
 {
-  "name": "vedantu-talent-desk-pilot",
+  "name": "vedantu-talent-desk",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
     "test": "node --test --test-isolation=none tests/*.test.mjs",
-    "db:local": "wrangler d1 migrations apply vedantu_talent_desk_db --local && wrangler d1 execute vedantu_talent_desk_db --local --file seed.sql",
-    "db:remote": "wrangler d1 migrations apply vedantu_talent_desk_db --remote && wrangler d1 execute vedantu_talent_desk_db --remote --file seed.sql",
+    "db:local": "wrangler d1 migrations apply vedantu_talent_desk_db --local",
+    "db:remote": "wrangler d1 migrations apply vedantu_talent_desk_db --remote",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
