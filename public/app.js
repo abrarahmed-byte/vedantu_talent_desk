@@ -9,6 +9,7 @@ const state = {
   session: null,
   sourcePreview: null,
   syncPoller: null,
+  syncKickInFlight: false,
 };
 
 function escapeHtml(value) {
@@ -318,8 +319,23 @@ async function loadMeta() {
   try {
     state.meta = await api("/api/meta");
     renderMeta();
+    resumeQueuedSync();
   } catch (error) {
     if (state.page !== "discover") toast(`Pilot health unavailable: ${error.message}`);
+  }
+}
+
+async function resumeQueuedSync() {
+  if (state.syncKickInFlight || !state.session?.canManageSources) return;
+  const queued = (state.meta?.jobs || []).find((job) => job.status === "Queued" && job.source_id);
+  if (!queued) return;
+  state.syncKickInFlight = true;
+  try {
+    await api(`/api/admin/sources/${encodeURIComponent(queued.source_id)}/sync`, { method: "POST", body: "{}" });
+  } catch (error) {
+    if (state.page === "sources") toast(`Background sync will retry automatically: ${error.message}`);
+  } finally {
+    state.syncKickInFlight = false;
   }
 }
 

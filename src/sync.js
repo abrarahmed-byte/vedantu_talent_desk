@@ -35,7 +35,7 @@ export const CANONICAL_FIELDS = [
 ];
 
 const SYNC_BATCH_SIZE = 200;
-const SYNC_BATCHES_PER_RUN = 3;
+const SYNC_BATCHES_PER_RUN = 1;
 
 function text(value, max = 1000) {
   if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean).join(" · ").slice(0, max);

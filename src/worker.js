@@ -198,6 +198,8 @@ async function startSourceSync(env, sourceId, actor, ctx, fullRefresh = false) {
     .bind(sourceId).first();
   if (activeJob?.id) {
     if (activeJob.status === "Running" && Number(activeJob.age_seconds || 0) < 20) return activeJob.id;
+    await env.DB.prepare(`UPDATE sync_jobs SET status='Running', stage='Starting next batch',
+      message='Background continuation accepted', updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(activeJob.id).run();
     const resumedWork = runSourceSync(env, sourceId, activeJob.id, false, true);
     if (ctx?.waitUntil) ctx.waitUntil(resumedWork);
     else await resumedWork;
