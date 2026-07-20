@@ -131,7 +131,8 @@ export async function updateSuperadminCandidate(request, env, user, candidateId)
   const changed = Object.keys(next).filter((key) => String(next[key]) !== String(current[key]));
   await env.DB.batch([
     env.DB.prepare(`UPDATE candidates SET name=?, initials=?, track=?, role=?, city=?, state=?, subject_display=?,
-      grades_display=?, boards_display=?, languages_display=?, experience_months=?, work_mode=?, search_text=?,
+      grades_display=?, boards_display=?, languages_display=?, experience_months=?, work_mode=?,
+      search_text=substr(trim(? || ' ' || row_text || ' ' || resume_text), 1, 50000),
       updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(next.name, initials, next.track, next.role, next.city, next.state,
       next.subject_display, next.grades_display, next.boards_display, next.languages_display, next.experience_months,
       next.work_mode, searchText, candidateId),
@@ -148,7 +149,7 @@ export async function exportSuperadminData(request, env, user) {
   const queries = {
     candidates: `SELECT c.id, c.name, c.email, c.phone, c.track AS source_track, c.role, c.city, c.state,
       c.subject_display, c.grades_display, c.boards_display, c.languages_display, c.education, c.college,
-      c.experience_months, c.work_mode, c.applied_at, c.source_sheet, c.resume_url, c.employment_status,
+      c.experience_months, c.work_mode, c.applied_at, c.source_sheet, c.resume_url, c.resume_text, c.employment_status,
       c.employment_times_hired, c.view_count, c.resume_open_count, c.call_count, c.duplicate_count,
       ${recommendationSql()} AS ai_recommended_track,
       COALESCE(json_extract(ai.canonical_json, '$.profile_classification.confidence'),0) AS ai_confidence

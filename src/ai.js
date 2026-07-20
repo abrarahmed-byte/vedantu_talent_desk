@@ -1,7 +1,7 @@
 import { connectorRequest } from "./sync.js";
 
-export const AI_PROMPT_VERSION = "resume-profile-classification-v2";
-export const AI_SCHEMA_VERSION = "candidate-evidence-v2";
+export const AI_PROMPT_VERSION = "resume-profile-classification-v3";
+export const AI_SCHEMA_VERSION = "candidate-evidence-v3";
 export const DEFAULT_AI_MODEL = "gpt-5-nano";
 
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
@@ -14,6 +14,7 @@ const EVIDENCE_SCHEMA = {
   additionalProperties: false,
   properties: {
     schema_version: { type: "string" },
+    resume_text: { type: "string" },
     summary: { type: "string" },
     profile_classification: {
       type: "object",
@@ -101,13 +102,14 @@ const EVIDENCE_SCHEMA = {
       },
     },
   },
-  required: ["schema_version", "summary", "profile_classification", "teaching_experience_months", "needs_human_review", "warnings", "facts", "employment_history", "education"],
+  required: ["schema_version", "resume_text", "summary", "profile_classification", "teaching_experience_months", "needs_human_review", "warnings", "facts", "employment_history", "education"],
 };
 
 const SYSTEM_PROMPT = `You reconcile a candidate's application form claims with evidence in their resume for a recruitment repository.
 
 Rules:
 - The form row contains candidate-provided claims. The resume is evidence, not necessarily a complete history.
+- Put the readable plain text from the entire resume in resume_text. Preserve names, employers, job titles, institutions, subjects, skills and dates. Remove repeated headers or decorative characters, do not summarize this field, and keep it within 20,000 characters.
 - Independently recommend Teacher, Non-teaching, or Unclear using resume text only. Do not use the form's profile type, subject selections, opportunity selections, or stated interest to make this classification.
 - Recommend Teacher only when the resume directly evidences teaching, tutoring, faculty work, classroom or online instruction, lesson delivery, student assessment, or comparable educator experience.
 - A degree, subject knowledge, software skills, exam preparation, or an interest in teaching is not teaching experience by itself.
@@ -337,6 +339,7 @@ function normalizedFactValue(fact) {
 async function persistAiResult(env, job, result) {
   if (!result || !Array.isArray(result.facts)) throw new Error("The structured résumé result is incomplete");
   const facts = result.facts.slice(0, 120).filter((fact) => normalizedFactValue(fact));
+  const resumeText = compactString(result.resume_text, 20000);
   const statements = [
     env.DB.prepare("DELETE FROM candidate_ai_facts WHERE candidate_id=?").bind(job.candidate_id),
     env.DB.prepare(`INSERT INTO candidate_ai_profiles(candidate_id, status, model, prompt_version, schema_version,
@@ -353,6 +356,9 @@ async function persistAiResult(env, job, result) {
       ["supported", "contradicted"].includes(fact.resume_status) ? fact.resume_status : "claim_only",
       fact.form_claimed ? 1 : 0, Math.max(0, Math.min(1, Number(fact.confidence) || 0)), JSON.stringify(fact.evidence || []),
     )),
+    ...(resumeText ? [env.DB.prepare(`UPDATE candidates SET resume_text=?,
+      search_text=substr(trim(row_text || ' ' || ?), 1, 50000), updated_at=CURRENT_TIMESTAMP
+      WHERE id=?`).bind(resumeText, resumeText, job.candidate_id)] : []),
     env.DB.prepare(`UPDATE ai_extraction_jobs SET status='completed', error_message='', completed_at=CURRENT_TIMESTAMP,
       updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(job.id),
   ];

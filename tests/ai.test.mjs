@@ -17,11 +17,14 @@ test("batch lines use Responses, stored resume files and strict structured outpu
   assert.equal(request.body.store, false);
   assert.equal(request.body.text.format.type, "json_schema");
   assert.equal(request.body.text.format.strict, true);
+  assert.equal(request.body.text.format.schema.properties.resume_text.type, "string");
+  assert.ok(request.body.text.format.schema.required.includes("resume_text"));
   assert.deepEqual(
     request.body.text.format.schema.properties.profile_classification.properties.recommended_track.enum,
     ["Teacher", "Non-teaching", "Unclear"],
   );
   assert.match(request.body.input[0].content[0].text, /resume text only/i);
+  assert.match(request.body.input[0].content[0].text, /plain text from the entire resume/i);
   assert.equal(request.body.input[1].content[1].file_id, "file-resume-1");
   assert.equal(request.body.input[1].content[1].detail, "low");
 });

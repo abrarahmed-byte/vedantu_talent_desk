@@ -152,8 +152,8 @@ export function standardizeRow(row, mapping, sourceLabel) {
     sourceLabel: text(sourceLabel, 200),
   });
 
-  const searchText = [fullName, role, subjects, levels, boards, languages, details.city, details.state, details.education, details.college, details.workMode, opportunities, ...Object.values(row || {})]
-    .map((value) => text(value, 600).toLowerCase()).filter(Boolean).join(" ").slice(0, 5000);
+  const rowText = [fullName, role, subjects, levels, boards, languages, details.city, details.state, details.education, details.college, details.workMode, opportunities, ...Object.values(row || {})]
+    .map((value) => text(value, 2000).toLowerCase()).filter(Boolean).join(" ").slice(0, 30000);
 
   return {
     fullName,
@@ -175,7 +175,8 @@ export function standardizeRow(row, mapping, sourceLabel) {
     appliedAt,
     resumeUrl: details.resumeUrl || "",
     resumeSummary: details.motivation || "",
-    searchText,
+    rowText,
+    searchText: rowText,
     details,
     identities: [email ? { type: "email", value: email } : null, phone ? { type: "phone", value: phone } : null].filter(Boolean),
   };
@@ -303,17 +304,20 @@ async function insertCandidate(env, candidateId, canonicalKey, item, sourceLabel
   await env.DB.prepare(`INSERT INTO candidates(
     id, canonical_key, name, initials, track, email, phone, city, state, role,
     subject_display, grades_display, boards_display, languages_display, education, college,
-    experience_months, work_mode, applied_at, source_sheet, resume_url, resume_summary, search_text
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    experience_months, work_mode, applied_at, source_sheet, resume_url, resume_summary, row_text, resume_text, search_text
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)`)
     .bind(candidateId, canonicalKey, item.fullName, item.initials, item.track, item.email, item.phone, item.city, item.state, item.role,
       item.subjects, item.levels, item.boards, item.languages, item.education, item.college, item.experienceMonths, item.workMode,
-      item.appliedAt, sourceLabel, item.resumeUrl, item.resumeSummary, item.searchText).run();
+      item.appliedAt, sourceLabel, item.resumeUrl, item.resumeSummary, item.rowText, item.searchText).run();
 }
 
 async function updateCandidate(env, candidateId, item, sourceLabel, incrementDuplicate, isLatest = true) {
   if (!isLatest) {
-    await env.DB.prepare("UPDATE candidates SET duplicate_count=duplicate_count+?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
-      .bind(incrementDuplicate ? 1 : 0, candidateId).run();
+    await env.DB.prepare(`UPDATE candidates SET
+      row_text=substr(trim(row_text || ' ' || ?), 1, 30000),
+      search_text=substr(trim(row_text || ' ' || ? || ' ' || resume_text), 1, 50000),
+      duplicate_count=duplicate_count+?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .bind(item.rowText, item.rowText, incrementDuplicate ? 1 : 0, candidateId).run();
     return;
   }
   await env.DB.prepare(`UPDATE candidates SET
@@ -326,12 +330,13 @@ async function updateCandidate(env, candidateId, item, sourceLabel, incrementDup
     experience_months = MAX(experience_months, ?), work_mode = COALESCE(NULLIF(?, ''), work_mode),
     applied_at = MAX(applied_at, ?), source_sheet = COALESCE(NULLIF(?, ''), source_sheet),
     resume_url = COALESCE(NULLIF(?, ''), resume_url), resume_summary = COALESCE(NULLIF(?, ''), resume_summary),
-    search_text = CASE WHEN ? <> '' THEN ? ELSE search_text END,
+    row_text = substr(trim(row_text || ' ' || ?), 1, 30000),
+    search_text = substr(trim(row_text || ' ' || ? || ' ' || resume_text), 1, 50000),
     duplicate_count = duplicate_count + ?, updated_at = CURRENT_TIMESTAMP
     WHERE id = ?`)
     .bind(item.fullName, item.initials, item.track, item.email, item.phone, item.city, item.state, item.role,
       item.subjects, item.levels, item.boards, item.languages, item.education, item.college, item.experienceMonths, item.workMode,
-      item.appliedAt, sourceLabel, item.resumeUrl, item.resumeSummary, item.searchText, item.searchText, incrementDuplicate ? 1 : 0, candidateId).run();
+      item.appliedAt, sourceLabel, item.resumeUrl, item.resumeSummary, item.rowText, item.rowText, incrementDuplicate ? 1 : 0, candidateId).run();
 }
 
 export async function importMappedRows(env, source, rows, mapping) {

@@ -46,7 +46,14 @@ function candidateResponse(row, score) {
   try { details = JSON.parse(row.standardized_json || "{}"); } catch { details = {}; }
   try { aiProfile = row.ai_canonical_json ? JSON.parse(row.ai_canonical_json) : null; } catch { aiProfile = null; }
   const classification = profileClassification(aiProfile, row.track);
-  const { standardized_json: _standardizedJson, ai_canonical_json: _aiCanonicalJson, ...candidate } = row;
+  const {
+    standardized_json: _standardizedJson,
+    ai_canonical_json: _aiCanonicalJson,
+    search_text: _searchText,
+    row_text: _rowText,
+    resume_text: _resumeText,
+    ...candidate
+  } = row;
   return {
     ...candidate,
     subjects: list(row.subject_display),
@@ -169,8 +176,7 @@ async function getCandidates(request, env) {
     ]);
     return { total: Number(totalRow?.count || 0), rows: rows.results || [] };
   };
-  let result = await execute(Boolean(ftsQuery));
-  if (!result.total && ftsQuery) result = await execute(false);
+  const result = await execute(Boolean(ftsQuery));
   const scored = result.rows.map((row) => candidateResponse(row,
     scoreCandidate(row, query, intent, Date.now(), { freshnessDecayDays, freshnessWeight })));
   const evaluatedRow = await env.DB.prepare("SELECT COUNT(*) AS count FROM candidates").first();

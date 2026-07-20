@@ -10,6 +10,10 @@ test("natural language query becomes safe indexed search terms", () => {
   assert.doesNotMatch(fts, /\bin\b/);
 });
 
+test("an arbitrary employer keyword remains an exact full-text term", () => {
+  assert.equal(buildFtsQuery("Unacademy"), '\"unacademy\"');
+});
+
 test("intent parser understands track, location, grades, language and experience", () => {
   const intent = parseSearchIntent("Physics teacher in Gurgaon for grades 9 to 12, Hindi, 4 years experience");
   assert.equal(intent.track, "Teacher");
