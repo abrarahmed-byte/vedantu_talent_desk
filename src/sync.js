@@ -34,7 +34,7 @@ export const CANONICAL_FIELDS = [
   { key: "college", label: "College / institution", required: false, aliases: ["college", "institution", "university"] },
 ];
 
-const SYNC_BATCH_SIZE = 25;
+const SYNC_BATCH_SIZE = 200;
 const SYNC_BATCHES_PER_RUN = 3;
 
 function text(value, max = 1000) {
@@ -169,6 +169,22 @@ async function hashRow(row) {
   return Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
+export async function withIdentityLocks(locks, identities, task) {
+  const keys = identities.map((identity) => `${identity.type}:${identity.value}`).sort();
+  const predecessors = keys.map((key) => locks.get(key) || Promise.resolve());
+  let release;
+  const current = new Promise((resolve) => { release = resolve; });
+  const gate = Promise.all(predecessors).then(() => current);
+  keys.forEach((key) => locks.set(key, gate));
+  await Promise.all(predecessors);
+  try {
+    return await task();
+  } finally {
+    release();
+    keys.forEach((key) => { if (locks.get(key) === gate) locks.delete(key); });
+  }
+}
+
 async function resolveCandidate(env, identities) {
   const candidateIds = new Set();
   for (const identity of identities) {
@@ -230,11 +246,17 @@ async function updateCandidate(env, candidateId, item, sourceLabel, incrementDup
 export async function importMappedRows(env, source, rows, mapping) {
   const stats = { processed: 0, successful: 0, imported: 0, updated: 0, merged: 0, skipped: 0, failed: 0, duplicatesWithinSource: 0, duplicatesCentral: 0, errors: [] };
 
-  for (let index = 0; index < rows.length; index += 1) {
+  const identityLocks = new Map();
+  let nextIndex = 0;
+  async function processNextRow() {
+    while (nextIndex < rows.length) {
+      const index = nextIndex;
+      nextIndex += 1;
     const row = rows[index] || {};
     stats.processed += 1;
     try {
       const item = standardizeRow(row, mapping, source.label);
+      await withIdentityLocks(identityLocks, item.identities, async () => {
       const rowKey = text(row._sheetRow || row.__rowNumber || `${item.appliedAt}:${item.email || item.phone}:${index}`, 400);
       const fingerprint = await hashRow(row);
       const sourceRecord = await env.DB.prepare(
@@ -244,11 +266,12 @@ export async function importMappedRows(env, source, rows, mapping) {
       if (sourceRecord?.row_fingerprint === fingerprint) {
         stats.successful += 1;
         stats.skipped += 1;
-        continue;
+        return;
       }
 
       let candidateId = sourceRecord?.candidate_id || await resolveCandidate(env, item.identities);
       const existed = Boolean(candidateId);
+      await withIdentityLocks(identityLocks, candidateId ? [{ type: "candidate", value: candidateId }] : [], async () => {
       let duplicateKind = sourceRecord?.duplicate_kind || "";
       if (!candidateId) {
         candidateId = crypto.randomUUID();
@@ -282,11 +305,16 @@ export async function importMappedRows(env, source, rows, mapping) {
         .bind(source.id, rowKey, candidateId, fingerprint, duplicateKind, JSON.stringify(row)).run();
       stats.successful += 1;
       if (existed && !sourceRecord && !duplicateKind) stats.merged += 1;
+      });
+      });
     } catch (error) {
       stats.failed += 1;
       if (stats.errors.length < 12) stats.errors.push({ row: row._sheetRow || index + 2, message: error instanceof Error ? error.message : "Row could not be imported" });
     }
+    }
   }
+  const workerCount = Math.min(8, rows.length);
+  await Promise.all(Array.from({ length: workerCount }, () => processNextRow()));
   return stats;
 }
 

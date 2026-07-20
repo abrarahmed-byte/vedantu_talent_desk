@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mergeStandardized, parseSpreadsheetId, standardizeRow } from "../src/sync.js";
+import { mergeStandardized, parseSpreadsheetId, standardizeRow, withIdentityLocks } from "../src/sync.js";
 
 test("parses a Google Spreadsheet URL or id", () => {
   const id = "1AbCdEfGhIjKlMnOpQrStUvWxYz123456";
@@ -49,4 +49,18 @@ test("incremental merge keeps old data when a new row is blank", () => {
     languages: "Hindi",
     availability: "20 hours",
   });
+});
+
+test("parallel imports serialize rows that share an identity", async () => {
+  const locks = new Map();
+  let active = 0;
+  let maximumActive = 0;
+  const run = () => withIdentityLocks(locks, [{ type: "email", value: "same@example.com" }], async () => {
+    active += 1;
+    maximumActive = Math.max(maximumActive, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    active -= 1;
+  });
+  await Promise.all([run(), run(), run()]);
+  assert.equal(maximumActive, 1);
 });
