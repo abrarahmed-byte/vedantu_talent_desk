@@ -10,8 +10,9 @@ One-time setup:
 2. In Project Settings, enable **Show appsscript.json manifest file in editor**
    and replace it with the included `appsscript.json`.
 3. Select `authorizeTalentDeskAccess` in the editor, choose **Run**, and approve
-   read-only access to Sheets and Drive. This must be done by the account that
-   owns the web-app deployment.
+   Sheets access and read-only Drive access. `SpreadsheetApp.openById()` requires
+   Google's `spreadsheets` scope even though this connector only reads Sheet
+   values. This must be done by the account that owns the web-app deployment.
 4. In Project Settings, add a Script Property named `CONNECTOR_SECRET` with a
    long random value.
 5. Deploy a **new Web App version**, executing as the project owner. Choose access that lets
@@ -33,3 +34,7 @@ and updates the UI with progress and ETA.
 If **Profiles needing attention** shows a `DriveApp.getFileById` permission
 error, repeat steps 2, 3, and 5, then use **Retry all after fixing access** in
 Talent Desk. Temporary network and OpenAI service failures retry automatically.
+
+If a source sync shows a `SpreadsheetApp.openById` permission error, confirm the
+manifest uses `https://www.googleapis.com/auth/spreadsheets`, then repeat steps
+3 and 5 before retrying the source.
