@@ -86,6 +86,11 @@ export function workspaceLoginUrl(request, env) {
   const nonce = crypto.randomUUID();
   const callback = `${requestUrl.origin}/auth/callback`;
   const loginUrl = new URL(connector);
+  const workspaceDomain = String(env.GOOGLE_WORKSPACE_DOMAIN || "vedantu.com").trim().toLowerCase();
+  const genericWebApp = loginUrl.pathname.match(/^\/macros\/s\/([^/]+)\/exec$/);
+  if (loginUrl.hostname === "script.google.com" && workspaceDomain && genericWebApp) {
+    loginUrl.pathname = `/a/macros/${encodeURIComponent(workspaceDomain)}/s/${genericWebApp[1]}/exec`;
+  }
   loginUrl.searchParams.set("action", "talentDeskLogin");
   loginUrl.searchParams.set("callback", callback);
   loginUrl.searchParams.set("nonce", nonce);

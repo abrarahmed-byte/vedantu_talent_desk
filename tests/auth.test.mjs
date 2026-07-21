@@ -93,6 +93,7 @@ test("Apps Script login tickets create a signed Talent Desk session", async () =
   });
   const loginUrl = new URL(start.loginUrl);
   const nonce = loginUrl.searchParams.get("nonce");
+  assert.equal(loginUrl.pathname, "/a/macros/vedantu.com/s/example/exec");
   assert.equal(loginUrl.searchParams.get("action"), "talentDeskLogin");
   assert.equal(loginUrl.searchParams.get("callback"), "https://talent.example/auth/callback");
 
