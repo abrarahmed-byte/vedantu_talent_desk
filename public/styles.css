@@ -142,11 +142,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .candidate-card:hover { border-color: #ffbea9; box-shadow: 0 10px 30px rgba(1,32,43,.075); transform: translateY(-1px); }
 .identity { min-width: 0; display: grid; grid-template-columns: 48px 1fr; align-items: center; gap: 12px; }
 .identity button { min-width: 0; padding: 0; border: 0; color: inherit; background: transparent; text-align: left; }
-.identity b, .identity span, .identity small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.identity b { font-size: 12px; }
-.identity span { margin-top: 4px; color: var(--ink-2); font-size: 8px; }
-.identity small { margin-top: 4px; color: #93a2a7; font-size: 7px; }
-.avatar { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; color: white; font-size: 8px; font-weight: 800; }
+.identity button b, .identity button span, .identity button small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.identity button b { font-size: 12px; }
+.identity button span { margin-top: 4px; color: var(--ink-2); font-size: 8px; }
+.identity button small { margin-top: 4px; color: #93a2a7; font-size: 7px; }
+.avatar { box-sizing: border-box; width: 32px; height: 32px; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; overflow: hidden; margin: 0; padding: 0; border-radius: 50%; color: white; font-size: 8px; font-weight: 800; line-height: 1; text-align: center; }
 .avatar.large { width: 48px; height: 48px; font-size: 11px; }
 .avatar.xlarge { width: 60px; height: 60px; font-size: 14px; }
 .avatar.orange { background: var(--orange); }
