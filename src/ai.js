@@ -7,7 +7,9 @@ export const DEFAULT_AI_MODEL = "gpt-5-nano";
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
 const MAX_BATCH_SIZE = 20;
 const MAX_PREPARE_PER_RUN = 4;
+const MAX_INGEST_PER_RUN = 4;
 const MAX_RESUME_BYTES = 5 * 1024 * 1024;
+const OPEN_BATCH_STATUSES = new Set(["validating", "in_progress", "finalizing", "cancelling"]);
 
 const EVIDENCE_SCHEMA = {
   type: "object",
@@ -340,6 +342,7 @@ async function persistAiResult(env, job, result) {
   if (!result || !Array.isArray(result.facts)) throw new Error("The structured résumé result is incomplete");
   const facts = result.facts.slice(0, 120).filter((fact) => normalizedFactValue(fact));
   const resumeText = compactString(result.resume_text, 20000);
+  if (!resumeText) throw new Error("The structured résumé result did not include searchable resume text");
   const statements = [
     env.DB.prepare("DELETE FROM candidate_ai_facts WHERE candidate_id=?").bind(job.candidate_id),
     env.DB.prepare(`INSERT INTO candidate_ai_profiles(candidate_id, status, model, prompt_version, schema_version,
@@ -370,15 +373,18 @@ async function markJobFailed(env, jobId, message) {
     updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(compactString(message, 800), jobId).run();
 }
 
-async function ingestJsonl(env, text, isErrorFile = false) {
+async function ingestJsonl(env, text, isErrorFile = false, limit = MAX_INGEST_PER_RUN) {
   const lines = String(text || "").split(/\r?\n/).filter(Boolean);
+  let processed = 0;
   for (const line of lines) {
+    if (processed >= limit) break;
     let entry;
     try { entry = JSON.parse(line); } catch { continue; }
     const jobId = compactString(entry.custom_id, 100);
     if (!jobId) continue;
     const job = await env.DB.prepare("SELECT * FROM ai_extraction_jobs WHERE id=?").bind(jobId).first();
-    if (!job) continue;
+    if (!job || job.status !== "batched") continue;
+    processed += 1;
     try {
       if (isErrorFile || entry.error || Number(entry.response?.status_code || 0) >= 400) {
         const message = entry.error?.message || entry.response?.body?.error?.message || "OpenAI batch request failed";
@@ -391,39 +397,73 @@ async function ingestJsonl(env, text, isErrorFile = false) {
       await markJobFailed(env, jobId, error instanceof Error ? error.message : "Could not save the résumé result");
     }
   }
+  return processed;
 }
 
 async function finishBatch(env, local, remote) {
+  const ingestLimit = Math.max(1, Number(env.AI_INGEST_PER_RUN) || MAX_INGEST_PER_RUN);
+  let processed = 0;
   if (remote.output_file_id) {
-    const output = await openAiFetch(env, `/files/${encodeURIComponent(remote.output_file_id)}/content`).then((response) => response.text());
-    await ingestJsonl(env, output, false);
+    const output = await openAiFetch(env, "/files/" + encodeURIComponent(remote.output_file_id) + "/content").then((response) => response.text());
+    processed += await ingestJsonl(env, output, false, ingestLimit);
   }
-  if (remote.error_file_id) {
-    const errors = await openAiFetch(env, `/files/${encodeURIComponent(remote.error_file_id)}/content`).then((response) => response.text());
-    await ingestJsonl(env, errors, true);
+  if (remote.error_file_id && processed < ingestLimit) {
+    const errors = await openAiFetch(env, "/files/" + encodeURIComponent(remote.error_file_id) + "/content").then((response) => response.text());
+    processed += await ingestJsonl(env, errors, true, ingestLimit - processed);
   }
-  const jobs = (await env.DB.prepare("SELECT id, resume_file_id, status FROM ai_extraction_jobs WHERE batch_id=?").bind(local.id).all()).results || [];
-  for (const job of jobs) {
-    if (job.status === "batched") await markJobFailed(env, job.id, "No result was returned for this résumé");
-    await deleteOpenAiFile(env, job.resume_file_id);
+  const unfinished = await env.DB.prepare("SELECT COUNT(*) AS count FROM ai_extraction_jobs WHERE batch_id=? AND status='batched'")
+    .bind(local.id).first();
+  if (Number(unfinished?.count || 0) && processed) {
+    return { complete: false, processed, remaining: Number(unfinished.count) };
   }
+  if (Number(unfinished?.count || 0)) {
+    await env.DB.prepare("UPDATE ai_extraction_jobs SET status='failed', error_message='No result was returned for this résumé', completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE batch_id=? AND status='batched'")
+      .bind(local.id).run();
+  }
+  const jobs = (await env.DB.prepare("SELECT resume_file_id FROM ai_extraction_jobs WHERE batch_id=?").bind(local.id).all()).results || [];
+  await Promise.all(jobs.map((job) => deleteOpenAiFile(env, job.resume_file_id)));
   await Promise.all([
     deleteOpenAiFile(env, local.input_file_id),
     deleteOpenAiFile(env, remote.output_file_id),
     deleteOpenAiFile(env, remote.error_file_id),
   ]);
+  return { complete: true, processed, remaining: 0 };
+}
+
+export function batchNeedsPolling(status, unfinishedJobs = 0) {
+  return OPEN_BATCH_STATUSES.has(compactString(status, 40)) || Number(unfinishedJobs) > 0;
 }
 
 async function pollBatches(env) {
-  const active = (await env.DB.prepare(`SELECT * FROM ai_batches WHERE status IN
-    ('validating','in_progress','finalizing','cancelling') ORDER BY created_at LIMIT 3`).all()).results || [];
+  const candidates = (await env.DB.prepare(`SELECT b.*,
+    (SELECT COUNT(*) FROM ai_extraction_jobs j WHERE j.batch_id=b.id AND j.status='batched') AS unfinished_jobs
+    FROM ai_batches b WHERE b.status IN ('validating','in_progress','finalizing','cancelling') OR EXISTS (
+      SELECT 1 FROM ai_extraction_jobs j WHERE j.batch_id=b.id AND j.status='batched'
+    ) ORDER BY b.created_at LIMIT 6`).all()).results || [];
+  const active = candidates.filter((batch) => batchNeedsPolling(batch.status, batch.unfinished_jobs)).slice(0, 3);
   for (const local of active) {
     const remote = await openAiFetch(env, `/batches/${encodeURIComponent(local.openai_batch_id)}`).then((response) => response.json());
+    if (remote.status === "completed") {
+      await env.DB.prepare("UPDATE ai_batches SET status='finalizing', output_file_id=?, error_file_id=?, completed_count=?, failed_count=?, updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(
+        remote.output_file_id || local.output_file_id || "", remote.error_file_id || local.error_file_id || "",
+        Number(remote.request_counts?.completed || local.completed_count || 0),
+        Number(remote.request_counts?.failed || local.failed_count || 0), local.id,
+      ).run();
+      const result = await finishBatch(env, local, {
+        ...remote,
+        output_file_id: remote.output_file_id || local.output_file_id || "",
+        error_file_id: remote.error_file_id || local.error_file_id || "",
+      });
+      if (result.complete) {
+        await env.DB.prepare("UPDATE ai_batches SET status='completed', completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?")
+          .bind(local.id).run();
+      }
+      continue;
+    }
     await env.DB.prepare(`UPDATE ai_batches SET status=?, output_file_id=?, error_file_id=?, completed_count=?, failed_count=?,
-      updated_at=CURRENT_TIMESTAMP, completed_at=CASE WHEN ? IN ('completed','failed','expired','cancelled') THEN CURRENT_TIMESTAMP ELSE completed_at END
+      updated_at=CURRENT_TIMESTAMP, completed_at=CASE WHEN ? IN ('failed','expired','cancelled') THEN CURRENT_TIMESTAMP ELSE completed_at END
       WHERE id=?`).bind(remote.status, remote.output_file_id || "", remote.error_file_id || "", Number(remote.request_counts?.completed || 0),
       Number(remote.request_counts?.failed || 0), remote.status, local.id).run();
-    if (remote.status === "completed") await finishBatch(env, local, remote);
     if (["failed", "expired", "cancelled"].includes(remote.status)) {
       const message = `OpenAI batch ${remote.status}`;
       await env.DB.prepare(`UPDATE ai_extraction_jobs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP,

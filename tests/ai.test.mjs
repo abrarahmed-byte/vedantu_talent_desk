@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildBatchJsonl, classifyAiFailure, extractResponseText, profileClassification, verificationForIntent } from "../src/ai.js";
+import { batchNeedsPolling, buildBatchJsonl, classifyAiFailure, extractResponseText, profileClassification, verificationForIntent } from "../src/ai.js";
 
 test("batch lines use Responses, stored resume files and strict structured output", () => {
   const jsonl = buildBatchJsonl([{
@@ -54,6 +54,12 @@ test("processed profiles accept resume-backed exam and subject evidence", () => 
 test("batch output text is extracted from the Responses output array", () => {
   const value = extractResponseText({ output: [{ content: [{ type: "output_text", text: "{\"facts\":[]}" }] }] });
   assert.equal(value, '{"facts":[]}');
+});
+
+test("completed batches with unfinished jobs are resumed after an interrupted write-back", () => {
+  assert.equal(batchNeedsPolling("completed", 20), true);
+  assert.equal(batchNeedsPolling("finalizing", 0), true);
+  assert.equal(batchNeedsPolling("completed", 0), false);
 });
 
 test("resume classification remains separate from the source-sheet category", () => {
