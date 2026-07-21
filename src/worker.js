@@ -143,6 +143,10 @@ async function getCandidates(request, env) {
   if (intent.pincodes.length) {
     addLikeAny("c.search_text", intent.pincodes);
   }
+  for (const keyword of (intent.keywords || []).slice(0, 12)) {
+    conditions.push("lower(c.search_text) LIKE ?");
+    bindings.push(`%${keyword}%`);
+  }
   if (intent.grades.length) addLikeAny("c.search_text", [Math.min(...intent.grades), Math.max(...intent.grades)]);
   if (workMode === "Online / Remote") conditions.push("(lower(c.work_mode) LIKE '%online%' OR lower(c.work_mode) LIKE '%remote%')");
   else if (workMode === "Offline / On-site") conditions.push("(lower(c.work_mode) LIKE '%offline%' OR lower(c.work_mode) LIKE '%on-site%' OR lower(c.work_mode) LIKE '%onsite%')");

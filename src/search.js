@@ -194,7 +194,7 @@ export function parseSearchIntent(query) {
     for (let grade = start; grade <= Math.min(end, 12); grade += 1) grades.push(grade);
   });
   const experienceMatch = normalized.match(/(\d+)\s*(?:\+\s*)?(?:years?|yrs?)/);
-  return {
+  const intent = {
     track: normalized.includes("non teaching") || normalized.includes("non-teaching")
       ? "Non-teaching"
       : normalized.includes("teacher") || normalized.includes("faculty") || normalized.includes("educator")
@@ -210,6 +210,19 @@ export function parseSearchIntent(query) {
     freshestFirst: /fresh|latest|newest|recent/.test(normalized),
     tokens: expandTokens(tokenize(query)),
   };
+  const knownTokens = new Set([
+    ...tokenize(intent.track),
+    ...intent.subjects.flatMap((value) => tokenize(value)),
+    ...intent.exams.flatMap((value) => tokenize(value)),
+    ...intent.languages.flatMap((value) => tokenize(value)),
+    ...locationSearchTerms(intent.locations).flatMap((value) => tokenize(value)),
+    ...intent.pincodes,
+    ...intent.grades.map(String),
+    "teacher", "teaching", "faculty", "educator", "jee", "iit", "neet", "olympiad", "ntse", "foundation",
+    "grade", "grades", "class", "classes", "experience", "experienced", "year", "years", "month", "months",
+  ]);
+  intent.keywords = unique(tokenize(query).filter((token) => !knownTokens.has(token)));
+  return intent;
 }
 
 function candidateGradeSet(candidate) {
@@ -286,6 +299,7 @@ export function describeIntent(intent) {
   if (intent.pincodes?.length) parts.push(...intent.pincodes.map((pincode) => `Pincode ${pincode}`));
   if (intent.grades.length) parts.push(`Grades ${Math.min(...intent.grades)}–${Math.max(...intent.grades)}`);
   if (intent.minimumExperienceMonths) parts.push(`${intent.minimumExperienceMonths}+ months experience`);
+  if (intent.keywords?.length) parts.push(`Keywords: ${intent.keywords.join(", ")}`);
   parts.push("fresh profiles first when fit is similar");
   return unique(parts).join(" · ");
 }

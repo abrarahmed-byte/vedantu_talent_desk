@@ -12,6 +12,14 @@ test("natural language query becomes safe indexed search terms", () => {
 
 test("an arbitrary employer keyword remains an exact full-text term", () => {
   assert.equal(buildFtsQuery("Unacademy"), '\"unacademy\"');
+  assert.deepEqual(parseSearchIntent("Unacademy").keywords, ["unacademy"]);
+});
+
+test("employer names remain mandatory beside structured teaching criteria", () => {
+  const intent = parseSearchIntent("Physics teacher with Unacademy experience in Telangana");
+  assert.deepEqual(intent.subjects, ["Physics"]);
+  assert.deepEqual(intent.locations, ["Telangana"]);
+  assert.deepEqual(intent.keywords, ["unacademy"]);
 });
 
 test("intent parser understands track, location, grades, language and experience", () => {
