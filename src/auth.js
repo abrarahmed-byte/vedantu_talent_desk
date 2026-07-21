@@ -1,3 +1,5 @@
+import { getConnectorSecret } from "./connector-secret.js";
+
 const ROLE_LEVEL = { Recruiter: 1, Admin: 2, Superadmin: 3 };
 const JWKS_CACHE_TTL_MS = 60 * 60 * 1000;
 const SESSION_COOKIE = "vtd_session";
@@ -95,13 +97,14 @@ export function workspaceLoginUrl(request, env) {
 
 export async function completeWorkspaceLogin(request, env) {
   const url = new URL(request.url);
-  const ticket = await verifyWorkspaceToken(url.searchParams.get("ticket"), env.CONNECTOR_SECRET, "login");
+  const connectorSecret = await getConnectorSecret(env);
+  const ticket = await verifyWorkspaceToken(url.searchParams.get("ticket"), connectorSecret, "login");
   const nonce = readCookie(request, LOGIN_NONCE_COOKIE);
   const email = String(ticket.email || "").trim().toLowerCase();
   if (!nonce || nonce !== ticket.nonce) throw new AuthError("This sign-in attempt has expired. Please try again.", 401);
   if (!/@vedantu\.com$/.test(email)) throw new AuthError("Use your Vedantu Google account to continue", 403);
   const now = Math.floor(Date.now() / 1000);
-  const session = await signWorkspaceToken({ kind: "session", email, iat: now, exp: now + SESSION_TTL_SECONDS }, env.CONNECTOR_SECRET);
+  const session = await signWorkspaceToken({ kind: "session", email, iat: now, exp: now + SESSION_TTL_SECONDS }, connectorSecret);
   return {
     email,
     sessionCookie: `${SESSION_COOKIE}=${encodeURIComponent(session)}; Max-Age=${SESSION_TTL_SECONDS}; Path=/; Secure; HttpOnly; SameSite=Lax`,
@@ -117,7 +120,7 @@ export function clearWorkspaceCookies() {
 }
 
 async function verifyWorkspaceSession(request, env) {
-  const payload = await verifyWorkspaceToken(readCookie(request, SESSION_COOKIE), env.CONNECTOR_SECRET, "session");
+  const payload = await verifyWorkspaceToken(readCookie(request, SESSION_COOKIE), await getConnectorSecret(env), "session");
   const email = String(payload.email || "").trim().toLowerCase();
   if (!/@vedantu\.com$/.test(email)) throw new AuthError("Use your Vedantu Google account to continue", 403);
   return email;

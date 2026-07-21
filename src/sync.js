@@ -1,3 +1,5 @@
+import { getConnectorSecret } from "./connector-secret.js";
+
 export const CANONICAL_FIELDS = [
   { key: "appliedAt", label: "Timestamp / applied date", required: true, aliases: ["timestamp", "applied date", "application date"] },
   { key: "email", label: "Email address", required: false, aliases: ["email address", "email"] },
@@ -500,13 +502,14 @@ async function sweepEmploymentSource(env, sourceId, syncToken) {
 
 export async function connectorRequest(env, payload) {
   if (!env.APPS_SCRIPT_CONNECTOR_URL || !env.CONNECTOR_SECRET) throw new Error("The Google Sheets connector has not been configured yet");
+  const connectorSecret = await getConnectorSecret(env);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12000);
   try {
     const response = await fetch(env.APPS_SCRIPT_CONNECTOR_URL, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...payload, secret: env.CONNECTOR_SECRET }),
+      body: JSON.stringify({ ...payload, secret: connectorSecret }),
       signal: controller.signal,
     });
     const result = await response.json().catch(() => ({}));

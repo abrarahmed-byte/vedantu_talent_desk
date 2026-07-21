@@ -13,6 +13,7 @@ import { backfillApplicationDates, CANONICAL_FIELDS, EMPLOYMENT_FIELDS, parseSpr
 import { enqueueAiBatch, getAiMeta, processAiEnrichment, profileClassification, retryAiFailures, setAiAutomation } from "./ai.js";
 import { EXPERIENCE_FILTERS, languageFilterValues, subjectFilterTerms, subjectFilterValues, workModeFilterValues } from "./filters.js";
 import { exportSuperadminData, getSuperadminCandidate, getSuperadminDashboard, updateSuperadminCandidate } from "./superadmin.js";
+import { storeConnectorSecret } from "./connector-secret.js";
 
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
@@ -33,6 +34,25 @@ function redirect(location, cookies = []) {
   });
   for (const cookie of cookies) headers.append("set-cookie", cookie);
   return new Response(null, { status: 302, headers });
+}
+
+function html(markup, status = 200) {
+  return new Response(markup, {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "referrer-policy": "no-referrer",
+    },
+  });
+}
+
+function connectorSecretSetupPage(updated = false) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Secure Google connector · Vedantu Talent Desk</title><style>
+  :root{font-family:Inter,Arial,sans-serif;color:#092d35;background:#f4f7f7}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 15% 12%,#ff684525 0 15%,transparent 16%),#f4f7f7}.card{width:min(520px,100%);background:#fff;border:1px solid #dce6e7;border-radius:24px;padding:32px;box-shadow:0 18px 45px #082b3414}.brand{display:flex;gap:12px;align-items:center;font-weight:800;font-size:20px}.mark{display:grid;place-items:center;width:38px;height:38px;border-radius:12px;background:#ff6845;color:#fff}h1{font-size:30px;line-height:1.1;margin:28px 0 10px}p{color:#547078;line-height:1.6}.success{padding:12px 14px;border-radius:12px;background:#e8fbf4;color:#087a56;font-weight:700}label{display:block;margin:22px 0 8px;font-size:13px;font-weight:800}input{width:100%;border:1px solid #bfd0d3;border-radius:12px;padding:14px;font:inherit;outline:none}input:focus{border-color:#ff6845;box-shadow:0 0 0 3px #ff684522}button{width:100%;margin-top:16px;border:0;border-radius:12px;padding:14px;background:#ff6845;color:#fff;font:800 15px inherit;cursor:pointer}.note{font-size:12px;margin-bottom:0}.back{display:block;text-align:center;margin-top:18px;color:#0c6070;font-weight:700;text-decoration:none}</style></head><body><main class="card"><div class="brand"><span class="mark">V</span>vedantu <small>TALENT DESK</small></div><h1>Secure the Google connector</h1><p>This Superadmin-only step stores the connector key encrypted in the Talent Desk database. The key is never saved in GitHub or shown again.</p>${updated ? '<p class="success">Connector key updated successfully.</p>' : ''}<form method="post" action="/admin/connector-secret"><label for="secret">New connector key</label><input id="secret" name="secret" type="password" minlength="32" maxlength="256" autocomplete="new-password" required><button type="submit">Save encrypted key</button></form><p class="note">Only active Talent Desk Superadmins can open or submit this page.</p><a class="back" href="/">Back to Talent Desk</a></main></body></html>`;
 }
 
 async function authRoute(request, env) {
@@ -344,6 +364,23 @@ function requireSecureAdmin(user, env) {
   }
 }
 
+async function connectorSecretSetup(request, env) {
+  const user = await authenticate(request, env);
+  requireRole(user, "Superadmin");
+  if (!user.protected) throw new AuthError("Vedantu sign-in is required to change the connector key", 403);
+  const url = new URL(request.url);
+  if (request.method === "GET") return html(connectorSecretSetupPage(url.searchParams.get("updated") === "1"));
+  if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (request.headers.get("origin") !== url.origin) throw new AuthError("This connector-key request was not accepted", 403);
+  const form = await request.formData();
+  const secret = String(form.get("secret") || "");
+  if (secret.length < 32 || secret.length > 256) return html(connectorSecretSetupPage(false), 400);
+  await storeConnectorSecret(env, secret, user.email);
+  await env.DB.prepare("INSERT INTO activity_logs(id, candidate_id, actor, action, detail, actor_email) VALUES (?, NULL, ?, 'connector_secret_rotated', 'Google connector key rotated securely', ?)")
+    .bind(crypto.randomUUID(), user.displayName, clean(user.email, 320).toLowerCase()).run();
+  return redirect(`${url.origin}/admin/connector-secret?updated=1`);
+}
+
 async function sessionResponse(env, user) {
   const filters = await repositoryFilters(env);
   return json({
@@ -575,6 +612,7 @@ export default {
         const response = await authRoute(request, env);
         if (response) return response;
       }
+      if (url.pathname === "/admin/connector-secret") return await connectorSecretSetup(request, env);
       if (url.pathname.startsWith("/api/")) return await routeApi(request, env, ctx);
       return env.ASSETS.fetch(request);
     } catch (error) {
