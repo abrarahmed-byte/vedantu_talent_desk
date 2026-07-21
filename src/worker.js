@@ -372,7 +372,9 @@ async function connectorSecretSetup(request, env) {
   if (request.method === "GET") return html(connectorSecretSetupPage(url.searchParams.get("updated") === "1"));
   if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
   const requestOrigin = request.headers.get("origin");
-  if (requestOrigin && requestOrigin !== url.origin) throw new AuthError("This connector-key request was not accepted", 403);
+  if (requestOrigin && requestOrigin !== "null" && requestOrigin !== url.origin) {
+    throw new AuthError("This connector-key request was not accepted", 403);
+  }
   const form = await request.formData();
   const secret = String(form.get("secret") || "");
   if (secret.length < 32 || secret.length > 256) return html(connectorSecretSetupPage(false), 400);
