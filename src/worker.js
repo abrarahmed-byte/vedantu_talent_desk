@@ -378,7 +378,7 @@ async function connectorSecretSetup(request, env) {
   await storeConnectorSecret(env, secret, user.email);
   await env.DB.prepare("INSERT INTO activity_logs(id, candidate_id, actor, action, detail, actor_email) VALUES (?, NULL, ?, 'connector_secret_rotated', 'Google connector key rotated securely', ?)")
     .bind(crypto.randomUUID(), user.displayName, clean(user.email, 320).toLowerCase()).run();
-  return redirect(`${url.origin}/admin/connector-secret?updated=1`);
+  return redirect(`${url.origin}/api/admin/connector-secret/setup?updated=1`);
 }
 
 async function sessionResponse(env, user) {
@@ -612,7 +612,9 @@ export default {
         const response = await authRoute(request, env);
         if (response) return response;
       }
-      if (url.pathname === "/admin/connector-secret") return await connectorSecretSetup(request, env);
+      if (["/admin/connector-secret", "/api/admin/connector-secret/setup"].includes(url.pathname)) {
+        return await connectorSecretSetup(request, env);
+      }
       if (url.pathname.startsWith("/api/")) return await routeApi(request, env, ctx);
       return env.ASSETS.fetch(request);
     } catch (error) {
