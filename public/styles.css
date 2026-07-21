@@ -36,12 +36,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .auth-loader p { margin: 0; color: var(--muted); font-size: 11px; font-weight: 600; }
 @keyframes auth-pulse { 50% { transform: rotate(-4deg) scale(1.08); box-shadow: 0 13px 30px rgba(255,105,61,.28); } }
 .login-screen { position: fixed; z-index: 190; inset: 0; overflow-y: auto; padding: 34px; display: grid; place-items: center; background: #eef3f3; }
-.login-shell { width: min(1120px,100%); min-height: 650px; display: grid; grid-template-columns: minmax(0,1.25fr) minmax(390px,.75fr); overflow: hidden; border-radius: 24px; background: white; box-shadow: 0 28px 80px rgba(1,32,43,.18); }
-.login-story { position: relative; overflow: hidden; padding: 58px; display: flex; flex-direction: column; justify-content: center; color: white; background: var(--ink); }
-.login-brand { position: absolute; z-index: 2; top: 38px; left: 58px; display: flex; align-items: center; gap: 12px; }
+.login-shell { width: min(480px,100%); min-height: 0; display: grid; grid-template-columns: 1fr; overflow: hidden; border-radius: 24px; background: white; box-shadow: 0 28px 80px rgba(1,32,43,.18); }
+.login-story { display: none; }
+.login-brand { display: flex; align-items: center; gap: 12px; }
 .login-brand > span:last-child { display: grid; }
 .login-brand b { font-size: 24px; line-height: 1; }
-.login-brand small { margin-top: 4px; color: #a8b7bc; font-size: 8px; letter-spacing: 1.6px; text-transform: uppercase; }
+.login-brand small { margin-top: 4px; color: var(--muted); font-size: 8px; letter-spacing: 1.6px; text-transform: uppercase; }
 .login-story > .kicker, .login-story > h1, .login-story > p, .login-benefits { position: relative; z-index: 2; }
 .login-story > .kicker { color: var(--orange); }
 .login-story h1 { max-width: 650px; margin: 0; font-size: clamp(36px,4.2vw,58px); line-height: 1.04; letter-spacing: -2.5px; }
@@ -55,8 +55,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .login-orbit { position: absolute; border: 1px solid rgba(255,105,61,.32); border-radius: 50%; }
 .login-orbit.one { width: 290px; height: 290px; right: -130px; top: -120px; }
 .login-orbit.two { width: 230px; height: 230px; left: -110px; bottom: -110px; border-color: rgba(104,37,229,.55); }
-.login-panel { padding: 62px 50px; display: flex; flex-direction: column; justify-content: center; }
-.login-panel h2 { margin: 0; font-size: 30px; line-height: 1.2; letter-spacing: -.8px; }
+.login-panel { padding: 54px 50px; display: flex; flex-direction: column; justify-content: center; }
+.login-panel .login-brand { margin-bottom: 36px; }
+.login-panel h1 { margin: 0 0 12px; font-size: 32px; line-height: 1.15; letter-spacing: -1px; }
+.login-panel h2 { margin: 0; font-size: 20px; line-height: 1.25; letter-spacing: -.4px; }
 .login-panel > p:not(.kicker) { margin: 14px 0 28px; color: var(--muted); font-size: 10px; line-height: 1.7; }
 .google-login { min-height: 52px; padding: 8px 14px; display: grid; grid-template-columns: 34px 1fr 34px; align-items: center; border: 1px solid #ccd5d8; border-radius: 10px; color: var(--ink); background: white; text-decoration: none; text-align: center; transition: .18s ease; }
 .google-login span { width: 31px; height: 31px; display: grid; place-items: center; border-radius: 50%; color: #4285f4; background: #f4f7fb; font-family: Arial,sans-serif; font-size: 15px; font-weight: 800; }
