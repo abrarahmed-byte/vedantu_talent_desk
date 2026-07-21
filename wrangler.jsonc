@@ -6,7 +6,7 @@
   "workers_dev": true,
   "keep_vars": true,
   "vars": {
-    "AUTH_MODE": "cloudflare-access",
+    "AUTH_MODE": "workspace-sso",
     "ALLOW_LOCAL_SOURCE_SYNC": "false",
     "AI_MODEL": "gpt-5-nano",
     "AI_BATCH_SIZE": "20",

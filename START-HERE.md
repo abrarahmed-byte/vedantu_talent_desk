@@ -15,7 +15,7 @@ The `db:remote` command applies schema migrations only. It does not insert sampl
 
 ## Source synchronization
 
-1. Sign in through Cloudflare Access with an approved workspace account.
+1. Sign in with an approved Vedantu Google Workspace account.
 2. Deploy and configure the private Apps Script connector.
 3. Add its URL and shared secret to the Worker.
 4. Connect an application or employment Sheet from **Sources**.

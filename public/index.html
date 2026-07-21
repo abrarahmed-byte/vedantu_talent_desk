@@ -6,10 +6,31 @@
     <meta name="description" content="Vedantu Talent Desk central candidate repository">
     <meta name="robots" content="noindex,nofollow">
     <title>Vedantu Talent Desk</title>
-    <link rel="stylesheet" href="/styles.css?v=20260721-1">
-    <script src="/app.js?v=20260720-4" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=20260721-2">
+    <script src="/app.js?v=20260721-1" defer></script>
   </head>
-  <body>
+  <body class="auth-pending">
+    <div class="auth-loader" id="authLoader" aria-label="Checking your Talent Desk session"><span class="v-mark"><i></i><i></i></span><p>Opening Vedantu Talent Desk…</p></div>
+    <section class="login-screen hidden" id="loginScreen" aria-labelledby="loginTitle">
+      <div class="login-shell">
+        <div class="login-story">
+          <div class="login-brand"><span class="v-mark"><i></i><i></i></span><span><b>vedantu</b><small>Talent Desk</small></span></div>
+          <p class="kicker">One secure talent workspace</p>
+          <h1>Meet the right candidate,<br><em>without waiting on sheets.</em></h1>
+          <p>Search every connected profile, compare application claims with résumé evidence and continue the recruiter conversation from one place.</p>
+          <div class="login-benefits"><span><b>Contextual search</b><small>Rows + résumé evidence</small></span><span><b>One candidate record</b><small>Duplicates merged safely</small></span><span><b>Shared history</b><small>Views, calls and outcomes</small></span></div>
+          <i class="login-orbit one"></i><i class="login-orbit two"></i>
+        </div>
+        <div class="login-panel">
+          <p class="kicker">Welcome to Talent Desk</p>
+          <h2 id="loginTitle">Sign in with your Vedantu account</h2>
+          <p id="loginMessage">Use the Google Workspace account your Admin approved for this workspace.</p>
+          <a class="google-login" id="googleSignIn" href="/auth/login"><span>G</span><b>Continue with Google</b></a>
+          <small class="login-domain">Only approved <b>@vedantu.com</b> accounts can open candidate data.</small>
+          <div class="login-security"><i></i><span><b>Secure by design</b><small>Your Google password is never shared with Talent Desk.</small></span></div>
+        </div>
+      </div>
+    </section>
     <div class="workspace-ribbon"><b id="workspaceRibbonTitle">VEDANTU TALENT DESK</b><span id="workspaceRibbonText">Access-controlled recruitment workspace</span></div>
     <div class="app-shell">
       <aside class="side-nav">
@@ -35,7 +56,7 @@
       <main class="workspace">
         <header class="topbar">
           <div><span>Talent acquisition</span><b>Central candidate pool</b><em id="topbarRole">Workspace</em></div>
-          <div class="topbar-actions"><span class="latency" id="latency">Waiting for first search</span><button class="outline-button" data-page-link="sources">View repository health</button></div>
+          <div class="topbar-actions"><span class="latency" id="latency">Waiting for first search</span><button class="outline-button" data-page-link="sources">View repository health</button><a class="outline-button sign-out" href="/auth/logout">Sign out</a></div>
         </header>
 
         <section class="page active" id="page-discover">

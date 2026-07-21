@@ -51,8 +51,37 @@ async function api(path, options = {}) {
     headers: { "content-type": "application/json", ...(options.headers || {}) },
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
+  if (!response.ok) {
+    const error = new Error(payload.error || `Request failed (${response.status})`);
+    error.status = response.status;
+    throw error;
+  }
   return payload;
+}
+
+function showLogin(error) {
+  const reason = new URLSearchParams(window.location.search).get("auth");
+  const denied = reason === "not-approved" || Number(error?.status) === 403;
+  const wrongAccount = reason === "wrong-account";
+  const failed = reason === "failed";
+  $("authLoader").classList.add("hidden");
+  $("loginScreen").classList.remove("hidden");
+  document.body.classList.remove("auth-pending");
+  document.body.classList.add("auth-login");
+  if (denied) {
+    $("loginTitle").textContent = "Your account is not approved yet";
+    $("loginMessage").textContent = "Google verified your Vedantu account, but an Admin must add it under Workspace access before you can open candidate data.";
+    $("googleSignIn").querySelector("b").textContent = "Try again with Google";
+  } else if (wrongAccount) {
+    $("loginTitle").textContent = "Use your Vedantu Google account";
+    $("loginMessage").textContent = "Talent Desk accepts approved @vedantu.com accounts only. Switch to your work account and try again.";
+  } else if (failed) {
+    $("loginTitle").textContent = "Let’s try that sign-in again";
+    $("loginMessage").textContent = "The sign-in link expired or could not be verified. No candidate data was opened.";
+  } else if (Number(error?.status) === 503) {
+    $("loginTitle").textContent = "Workspace sign-in is being connected";
+    $("loginMessage").textContent = error.message;
+  }
 }
 
 function replaceSelectOptions(id, leadingLabel, values) {
@@ -877,7 +906,10 @@ document.addEventListener("keydown", (event) => {
 
 async function initialize() {
   try { await loadSession(); }
-  catch (error) { toast(error.message); }
+  catch (error) { showLogin(error); return; }
+  $("authLoader").classList.add("hidden");
+  $("loginScreen").classList.add("hidden");
+  document.body.classList.remove("auth-pending", "auth-login");
   await Promise.all([loadMeta(), runSearch(false)]);
 }
 

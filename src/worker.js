@@ -1,5 +1,14 @@
 import { buildFtsQuery, describeIntent, locationSearchTerms, parseSearchIntent, scoreCandidate } from "./search.js";
-import { AuthError, authenticate, canManageSources, requireRole, roleAtLeast } from "./auth.js";
+import {
+  AuthError,
+  authenticate,
+  canManageSources,
+  clearWorkspaceCookies,
+  completeWorkspaceLogin,
+  requireRole,
+  roleAtLeast,
+  workspaceLoginUrl,
+} from "./auth.js";
 import { backfillApplicationDates, CANONICAL_FIELDS, EMPLOYMENT_FIELDS, parseSpreadsheetId, previewGoogleSheet, runSourceSync } from "./sync.js";
 import { enqueueAiBatch, getAiMeta, processAiEnrichment, profileClassification, retryAiFailures, setAiAutomation } from "./ai.js";
 import { EXPERIENCE_FILTERS, languageFilterValues, subjectFilterTerms, subjectFilterValues, workModeFilterValues } from "./filters.js";
@@ -14,6 +23,40 @@ const JSON_HEADERS = {
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: JSON_HEADERS });
+}
+
+function redirect(location, cookies = []) {
+  const headers = new Headers({
+    location,
+    "cache-control": "no-store",
+    "referrer-policy": "no-referrer",
+  });
+  for (const cookie of cookies) headers.append("set-cookie", cookie);
+  return new Response(null, { status: 302, headers });
+}
+
+async function authRoute(request, env) {
+  const url = new URL(request.url);
+  if (url.pathname === "/auth/login") {
+    const login = workspaceLoginUrl(request, env);
+    return redirect(login.loginUrl, [login.nonceCookie]);
+  }
+  if (url.pathname === "/auth/logout") {
+    return redirect(`${url.origin}/?signed_out=1`, clearWorkspaceCookies());
+  }
+  if (url.pathname !== "/auth/callback") return null;
+
+  try {
+    const login = await completeWorkspaceLogin(request, env);
+    const user = await env.DB.prepare("SELECT active FROM access_users WHERE lower(email)=? LIMIT 1").bind(login.email).first();
+    if (!user || !Number(user.active)) {
+      return redirect(`${url.origin}/?auth=not-approved`, clearWorkspaceCookies());
+    }
+    return redirect(`${url.origin}/?signed_in=1`, [login.sessionCookie, login.clearNonceCookie]);
+  } catch (error) {
+    const reason = error instanceof AuthError && error.status === 403 ? "wrong-account" : "failed";
+    return redirect(`${url.origin}/?auth=${reason}`, clearWorkspaceCookies());
+  }
 }
 
 function clean(value, max = 240) {
@@ -528,6 +571,10 @@ export default {
   async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
+      if (url.pathname.startsWith("/auth/")) {
+        const response = await authRoute(request, env);
+        if (response) return response;
+      }
       if (url.pathname.startsWith("/api/")) return await routeApi(request, env, ctx);
       return env.ASSETS.fetch(request);
     } catch (error) {

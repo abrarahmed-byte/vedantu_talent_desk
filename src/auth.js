@@ -1,5 +1,8 @@
 const ROLE_LEVEL = { Recruiter: 1, Admin: 2, Superadmin: 3 };
 const JWKS_CACHE_TTL_MS = 60 * 60 * 1000;
+const SESSION_COOKIE = "vtd_session";
+const LOGIN_NONCE_COOKIE = "vtd_login_nonce";
+const SESSION_TTL_SECONDS = 8 * 60 * 60;
 const jwksCache = new Map();
 
 export class AuthError extends Error {
@@ -14,6 +17,110 @@ function decodeBase64Url(value) {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
   return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+}
+
+function encodeBase64Url(value) {
+  const bytes = value instanceof Uint8Array ? value : new TextEncoder().encode(String(value));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function readCookie(request, name) {
+  const cookies = String(request.headers.get("cookie") || "").split(";");
+  for (const cookie of cookies) {
+    const separator = cookie.indexOf("=");
+    if (separator < 0 || cookie.slice(0, separator).trim() !== name) continue;
+    return decodeURIComponent(cookie.slice(separator + 1).trim());
+  }
+  return "";
+}
+
+async function hmacKey(secret, usage) {
+  const value = String(secret || "");
+  if (value.length < 24) throw new AuthError("Workspace sign-in is not configured", 503);
+  return crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(value),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    [usage],
+  );
+}
+
+export async function signWorkspaceToken(payload, secret) {
+  const encoded = encodeBase64Url(JSON.stringify(payload));
+  const key = await hmacKey(secret, "sign");
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(encoded));
+  return `${encoded}.${encodeBase64Url(new Uint8Array(signature))}`;
+}
+
+export async function verifyWorkspaceToken(token, secret, expectedKind) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 2) throw new AuthError("Sign in with your Vedantu account to continue", 401);
+  const key = await hmacKey(secret, "verify");
+  const valid = await crypto.subtle.verify(
+    "HMAC",
+    key,
+    decodeBase64Url(parts[1]),
+    new TextEncoder().encode(parts[0]),
+  );
+  if (!valid) throw new AuthError("Your Talent Desk session is invalid", 401);
+
+  let payload;
+  try { payload = decodeJwtJson(parts[0]); }
+  catch { throw new AuthError("Your Talent Desk session is invalid", 401); }
+  const now = Math.floor(Date.now() / 1000);
+  if (payload.kind !== expectedKind || !Number.isFinite(payload.exp) || payload.exp <= now) {
+    throw new AuthError("Your Talent Desk session has expired", 401);
+  }
+  return payload;
+}
+
+export function workspaceLoginUrl(request, env) {
+  const connector = String(env.APPS_SCRIPT_CONNECTOR_URL || "").trim();
+  if (!connector || !env.CONNECTOR_SECRET) throw new AuthError("Google Workspace sign-in is not configured", 503);
+  const requestUrl = new URL(request.url);
+  const nonce = crypto.randomUUID();
+  const callback = `${requestUrl.origin}/auth/callback`;
+  const loginUrl = new URL(connector);
+  loginUrl.searchParams.set("action", "talentDeskLogin");
+  loginUrl.searchParams.set("callback", callback);
+  loginUrl.searchParams.set("nonce", nonce);
+  return {
+    loginUrl: loginUrl.toString(),
+    nonceCookie: `${LOGIN_NONCE_COOKIE}=${encodeURIComponent(nonce)}; Max-Age=600; Path=/; Secure; HttpOnly; SameSite=Lax`,
+  };
+}
+
+export async function completeWorkspaceLogin(request, env) {
+  const url = new URL(request.url);
+  const ticket = await verifyWorkspaceToken(url.searchParams.get("ticket"), env.CONNECTOR_SECRET, "login");
+  const nonce = readCookie(request, LOGIN_NONCE_COOKIE);
+  const email = String(ticket.email || "").trim().toLowerCase();
+  if (!nonce || nonce !== ticket.nonce) throw new AuthError("This sign-in attempt has expired. Please try again.", 401);
+  if (!/@vedantu\.com$/.test(email)) throw new AuthError("Use your Vedantu Google account to continue", 403);
+  const now = Math.floor(Date.now() / 1000);
+  const session = await signWorkspaceToken({ kind: "session", email, iat: now, exp: now + SESSION_TTL_SECONDS }, env.CONNECTOR_SECRET);
+  return {
+    email,
+    sessionCookie: `${SESSION_COOKIE}=${encodeURIComponent(session)}; Max-Age=${SESSION_TTL_SECONDS}; Path=/; Secure; HttpOnly; SameSite=Lax`,
+    clearNonceCookie: `${LOGIN_NONCE_COOKIE}=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Lax`,
+  };
+}
+
+export function clearWorkspaceCookies() {
+  return [
+    `${SESSION_COOKIE}=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Lax`,
+    `${LOGIN_NONCE_COOKIE}=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Lax`,
+  ];
+}
+
+async function verifyWorkspaceSession(request, env) {
+  const payload = await verifyWorkspaceToken(readCookie(request, SESSION_COOKIE), env.CONNECTOR_SECRET, "session");
+  const email = String(payload.email || "").trim().toLowerCase();
+  if (!/@vedantu\.com$/.test(email)) throw new AuthError("Use your Vedantu Google account to continue", 403);
+  return email;
 }
 
 function decodeJwtJson(value) {
@@ -97,10 +204,15 @@ export async function verifyAccessJwt(token, env) {
 
 export async function authenticate(request, env) {
   const authMode = String(env.AUTH_MODE || "local").toLowerCase();
-  const protectedMode = authMode === "cloudflare-access";
-  const email = protectedMode
-    ? (await verifyAccessJwt(request.headers.get("cf-access-jwt-assertion"), env)).email
-    : "local.admin@example.com";
+  const protectedMode = ["cloudflare-access", "apps-script-sso", "workspace-sso"].includes(authMode);
+  const accessAssertion = request.headers.get("cf-access-jwt-assertion");
+  const email = authMode === "cloudflare-access"
+    ? (await verifyAccessJwt(accessAssertion, env)).email
+    : authMode === "workspace-sso" && accessAssertion
+      ? (await verifyAccessJwt(accessAssertion, env)).email
+      : authMode === "apps-script-sso" || authMode === "workspace-sso"
+      ? await verifyWorkspaceSession(request, env)
+      : "local.admin@example.com";
 
   if (!email) throw new AuthError("Sign in with your Vedantu account to continue", 401);
 

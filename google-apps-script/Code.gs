@@ -6,6 +6,8 @@
  * as the Cloudflare Worker secret named CONNECTOR_SECRET.
  */
 
+var TALENT_DESK_ORIGIN_ = 'https://vedantu-talent-desk.abrar-ahmed-778.workers.dev';
+
 function json_(value) {
   return ContentService.createTextOutput(JSON.stringify(value))
     .setMimeType(ContentService.MimeType.JSON);
@@ -15,6 +17,59 @@ function requireSecret_(payload) {
   var expected = PropertiesService.getScriptProperties().getProperty('CONNECTOR_SECRET');
   if (!expected) throw new Error('CONNECTOR_SECRET is not configured in Script Properties.');
   if (!payload || payload.secret !== expected) throw new Error('Connector authorization failed.');
+}
+
+function base64WebSafe_(value) {
+  var bytes = typeof value === 'string' ? Utilities.newBlob(value).getBytes() : value;
+  return Utilities.base64EncodeWebSafe(bytes).replace(/=+$/g, '');
+}
+
+function escapeHtml_(value) {
+  return String(value || '').replace(/[&<>"']/g, function (character) {
+    return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character];
+  });
+}
+
+function loginPage_(title, message, redirectUrl) {
+  var safeRedirect = redirectUrl ? escapeHtml_(redirectUrl) : '';
+  var action = redirectUrl
+    ? '<a href="' + safeRedirect + '">Continue to Talent Desk</a>'
+    : '<p class="help">Close this tab and sign in again with your Vedantu Google account.</p>';
+  return HtmlService.createHtmlOutput(
+    '<!doctype html><html><head><base target="_top"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<meta name="referrer" content="no-referrer"><title>' + escapeHtml_(title) + '</title><style>' +
+    'body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f6f8f8;color:#01202b;font-family:Arial,sans-serif}' +
+    '.card{width:min(420px,calc(100% - 40px));padding:34px;border-radius:18px;background:#fff;box-shadow:0 20px 60px rgba(1,32,43,.15);text-align:center}' +
+    '.mark{width:48px;height:48px;margin:0 auto 20px;display:grid;place-items:center;border-radius:13px;background:#ff693d;color:#fff;font-size:25px;font-weight:900;transform:rotate(-4deg)}' +
+    'h1{margin:0;font-size:24px}p{margin:12px 0 24px;color:#71868e;font-size:14px;line-height:1.6}' +
+    'a{display:block;padding:13px 18px;border-radius:9px;background:#ff693d;color:#fff;text-decoration:none;font-weight:700}.help{margin-bottom:0;font-size:12px}' +
+    '</style></head><body><main class="card"><div class="mark">V</div><h1>' + escapeHtml_(title) + '</h1><p>' +
+    escapeHtml_(message) + '</p>' + action + '</main></body></html>'
+  ).setTitle(title);
+}
+
+function talentDeskLogin_(event) {
+  var callback = String(event && event.parameter && event.parameter.callback || '');
+  var nonce = String(event && event.parameter && event.parameter.nonce || '');
+  var expectedCallback = TALENT_DESK_ORIGIN_ + '/auth/callback';
+  if (callback !== expectedCallback || !/^[0-9a-f-]{30,50}$/i.test(nonce)) {
+    return loginPage_('Sign-in link expired', 'Return to Talent Desk and start a new sign-in.', '');
+  }
+  var email = String(Session.getActiveUser().getEmail() || '').trim().toLowerCase();
+  if (!/@vedantu\.com$/.test(email)) {
+    return loginPage_('Vedantu account required', 'This workspace is available only to approved @vedantu.com accounts.', '');
+  }
+  var secret = PropertiesService.getScriptProperties().getProperty('CONNECTOR_SECRET');
+  if (!secret) return loginPage_('Sign-in is not ready', 'The Talent Desk connector secret is missing.', '');
+  var payload = base64WebSafe_(JSON.stringify({
+    kind: 'login',
+    email: email,
+    nonce: nonce,
+    exp: Math.floor(Date.now() / 1000) + 300
+  }));
+  var signature = base64WebSafe_(Utilities.computeHmacSha256Signature(payload, secret));
+  var destination = callback + '?ticket=' + encodeURIComponent(payload + '.' + signature);
+  return loginPage_('Signing you in', 'Google verified your Vedantu account. Returning to Talent Desk…', destination);
 }
 
 function sheet_(spreadsheetId, tabName) {
@@ -136,7 +191,8 @@ function authorizeTalentDeskAccess() {
   return 'Talent Desk can read permitted Sheets and Google Drive résumés.';
 }
 
-function doGet() {
+function doGet(event) {
+  if (event && event.parameter && event.parameter.action === 'talentDeskLogin') return talentDeskLogin_(event);
   return json_({ ok: true, service: 'Vedantu Talent Desk Google Sheets connector' });
 }
 

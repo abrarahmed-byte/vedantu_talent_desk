@@ -1,8 +1,9 @@
 # Google Sheets connector
 
 This small Apps Script web app reads private Google Sheets using the deploying
-admin's Google permissions. It returns only the requested rows to the Cloudflare
-Worker and never exposes the connector secret to the browser.
+admin's Google permissions and verifies the active Vedantu Google account during
+Talent Desk sign-in. It returns only the requested rows to the Cloudflare Worker
+and never exposes the connector secret to the browser.
 
 One-time setup:
 
@@ -16,13 +17,17 @@ One-time setup:
 4. In Project Settings, add a Script Property named `CONNECTOR_SECRET` with a
    long random value.
 5. Deploy a **new Web App version**, executing as the project owner. Choose access that lets
-   Cloudflare call the Web App; the shared secret still protects every data request.
+   Cloudflare call the Web App; the shared secret still protects every data request. Keep the
+   project owned and deployed by a `@vedantu.com` account so Google can identify colleagues
+   in the same Workspace domain during sign-in.
 6. Add the Web App URL to Cloudflare as `APPS_SCRIPT_CONNECTOR_URL`.
 7. Add the same random value to Cloudflare as the encrypted
    `CONNECTOR_SECRET` secret.
 
-Do this only after Cloudflare Access protects the Worker and Admin/Recruiter
-users are present in D1.
+The production Worker URL can be **Public** in Cloudflare because the Worker now
+requires a short-lived, signed Google Workspace session for every API request.
+Only active users in Talent Desk's `access_users` table are admitted; making the
+URL public exposes the branded sign-in screen, not candidate records.
 
 The deploying account must be able to open every Sheet an Admin connects and
 every Google Drive résumé that the AI evidence pipeline processes. Google Docs are
