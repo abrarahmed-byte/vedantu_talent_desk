@@ -96,7 +96,10 @@ function list(value) {
   return clean(value, 500).split("·").map((item) => item.trim()).filter(Boolean);
 }
 
+let repositoryFilterCache = null;
+
 async function repositoryFilters(env) {
+  if (repositoryFilterCache?.expiresAt > Date.now()) return repositoryFilterCache.value;
   const [subjects, languages, workModes] = await Promise.all([
     env.DB.prepare(`SELECT subject_display AS value FROM candidates WHERE trim(subject_display) <> ''
       UNION SELECT grades_display AS value FROM candidates WHERE trim(grades_display) <> ''
@@ -104,12 +107,14 @@ async function repositoryFilters(env) {
     env.DB.prepare("SELECT DISTINCT languages_display AS value FROM candidates WHERE trim(languages_display) <> ''").all(),
     env.DB.prepare("SELECT DISTINCT work_mode AS value FROM candidates WHERE trim(work_mode) <> ''").all(),
   ]);
-  return {
+  const value = {
     subjects: subjectFilterValues(subjects.results),
     languages: languageFilterValues(languages.results),
     workModes: workModeFilterValues(workModes.results),
     experience: EXPERIENCE_FILTERS,
   };
+  repositoryFilterCache = { value, expiresAt: Date.now() + 300000 };
+  return value;
 }
 
 function candidateResponse(row, score, searchFit = null, options = {}) {
@@ -165,7 +170,8 @@ async function getSearchPlan(request, env) {
     return json({ plan, criteria: [], mode: "manual", responseTimeMs: Date.now() - started });
   }
   try {
-    const plan = await createAiSearchPlan(env, query);
+    const catalog = await repositoryFilters(env);
+    const plan = await createAiSearchPlan(env, query, catalog);
     return json({ plan, criteria: describeSearchPlan(plan), mode: "openai", responseTimeMs: Date.now() - started });
   } catch (error) {
     const plan = fallbackSearchPlan(query);
@@ -270,8 +276,8 @@ async function getCandidates(request, env, options = {}) {
     addLikeAny("c.search_text", intent.pincodes);
   }
   for (const keyword of (intent.keywords || []).slice(0, 12)) {
-    conditions.push("lower(c.search_text) LIKE ?");
-    bindings.push(`%${keyword}%`);
+    conditions.push("(lower(c.row_text) LIKE ? OR lower(c.resume_text) LIKE ?)");
+    bindings.push(`%${keyword}%`, `%${keyword}%`);
   }
   if (intent.grades.length) addLikeAny("c.search_text", [Math.min(...intent.grades), Math.max(...intent.grades)]);
   const effectiveWorkMode = workMode && workMode !== "Any work mode" ? workMode : required.work_mode;

@@ -232,3 +232,37 @@ test("the AP TS thirty-day brief contains only executable database criteria", as
   assert.ok(criteria.every((item) => item.executable && item.effect === "filter" && item.database_field));
   assert.doesNotMatch(plan.interpretation, /Context: applied/i);
 });
+
+test("GPT receives the repository field catalogue and routes unmatched employers to row or resume text", async () => {
+  const raw = {
+    interpretation: "Math teachers in Tamil Nadu with Unacademy experience",
+    semantic_query: "Mathematics teachers Tamil Nadu Unacademy",
+    required: bucket({
+      track: "Teacher", subjects: ["Mathematics"], locations: ["Tamil Nadu"],
+      languages: ["Tamil"], keywords: ["Unacademy", "worked in"],
+    }),
+    preferred: bucket(), excluded: bucket(), freshest_first: false, confidence: 0.98,
+  };
+  let requestBody;
+  const query = "Math teachers in Tamil Nadu worked in Unacademy";
+  const catalog = {
+    subjects: ["Mathematics", "Chemistry", "Physics"],
+    languages: ["English", "Tamil"],
+    workModes: ["Online / Remote"],
+    experience: [{ value: 48, label: "4+ years" }],
+  };
+  const plan = await createAiSearchPlan(openAiEnv(raw, (body) => { requestBody = body; }), query, catalog);
+  assert.equal(plan.required.track, "Teacher");
+  assert.deepEqual(plan.required.subjects, ["Mathematics"]);
+  assert.deepEqual(plan.required.locations, ["Tamil Nadu"]);
+  assert.deepEqual(plan.required.languages, []);
+  assert.deepEqual(plan.required.keywords, ["Unacademy"]);
+  const employer = describeSearchPlan(plan).find((item) => item.field === "keywords");
+  assert.equal(employer.label, "Row / résumé: Unacademy");
+  assert.equal(employer.database_field, "standardized row, then résumé text");
+  const systemText = requestBody.input[0].content[0].text;
+  assert.match(systemText, /CURRENT REPOSITORY SEARCH CATALOG/);
+  assert.match(systemText, /subjects \/ function/);
+  assert.match(systemText, /Chemistry/);
+  assert.match(systemText, /parsed résumé text/);
+});

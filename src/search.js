@@ -29,7 +29,7 @@ const SYNONYMS = {
 const SUBJECT_TERMS = [
   { label: "Mathematics", terms: ["mathematics", "maths", "math"] },
   { label: "Physics", terms: ["physics"] },
-  { label: "Chemistry", terms: ["chemistry"] },
+  { label: "Chemistry", terms: ["chemistry", "chem"] },
   { label: "Biology", terms: ["biology", "bio"] },
   { label: "English", terms: ["english"] },
   { label: "Computer Science", terms: ["computer science"] },
@@ -153,7 +153,7 @@ function contextualLocations(query) {
   for (const match of normalized.matchAll(pattern)) {
     const prefix = normalized.slice(Math.max(0, match.index - 24), match.index);
     if (/\b(?:experience|experienced|expert|speciali[sz]ed|proficient|skilled|worked|employed)\s*$/.test(prefix)) continue;
-    const phrase = match[1].split(/[,;]|\b(?:with|who|that|for|having|and|or|teaching|speaks?|grade|grades|class|classes|board|experience|years?|months?|available|open)\b/)[0].trim();
+    const phrase = match[1].split(/[,;]|\b(?:with|who|that|for|having|and|or|worked|employed|teaching|speaks?|grade|grades|class|classes|board|experience|years?|months?|available|open)\b/)[0].trim();
     if (!phrase || phrase.length > 45 || LOCATION_NOISE.test(phrase)) continue;
     const group = locationGroup(phrase);
     locations.push(group?.label || titleCase(phrase));
@@ -175,6 +175,15 @@ export function locationSearchTerms(locations) {
 
 function findSubjects(query) {
   return SUBJECT_TERMS.filter((subject) => subject.terms.some((term) => hasTerm(query, term))).map((subject) => subject.label);
+}
+
+function findLanguages(query, locations) {
+  let searchable = ` ${String(query || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
+  for (const location of locationSearchTerms(locations).sort((left, right) => right.length - left.length)) {
+    const phrase = ` ${String(location).replace(/[^a-z0-9]+/g, " ").trim()} `;
+    searchable = searchable.replaceAll(phrase, " ");
+  }
+  return findKnown(searchable, LANGUAGES);
 }
 
 function findExams(query) {
@@ -225,7 +234,7 @@ export function parseSearchIntent(query) {
     subjects: unique(findSubjects(query)),
     exams,
     examMatchMode: examMatchMode(query, exams),
-    languages: findKnown(query, LANGUAGES),
+    languages: findLanguages(query, locations),
     locations: unique(locations),
     locationMatchMode: locations.length > 1 ? "any" : "all",
     pincodes,

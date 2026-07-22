@@ -1,7 +1,7 @@
 const SUBJECT_TAXONOMY = [
   ["Mathematics", ["mathematics", "maths", "math"]],
   ["Physics", ["physics"]],
-  ["Chemistry", ["chemistry", "biochemistry"]],
+  ["Chemistry", ["chemistry", "chem", "biochemistry"]],
   ["Biology", ["biology", "botany", "zoology", "biotechnology", "microbiology", "anatomy", "physiology", "genetics"]],
   ["General Science", ["general science", "basic science", "science upto", "science up to", "science for class"]],
   ["Environmental Science / EVS", ["environmental science", "environment science", "environmental biology", "ecology", "e.v.s", "evs"]],

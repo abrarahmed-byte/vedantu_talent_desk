@@ -43,6 +43,24 @@ export const SEARCH_PLAN_SCHEMA = {
   required: ["interpretation", "semantic_query", "required", "preferred", "excluded", "freshest_first", "confidence"],
 };
 
+const SEARCH_FIELD_CONTRACT = [
+  { plan_field: "track", standardized_columns: ["profile type", "AI recommended profile type"], examples: ["teacher", "faculty", "non-teaching"] },
+  { plan_field: "subjects", standardized_columns: ["subjects / function", "role", "AI résumé subject evidence"], examples: ["math → Mathematics", "chem → Chemistry", "bio → Biology"] },
+  { plan_field: "exams", standardized_columns: ["levels / grades", "AI résumé exam evidence"], examples: ["JEE", "NEET", "Olympiad"] },
+  { plan_field: "locations", standardized_columns: ["current city", "current state"], examples: ["AP → Andhra Pradesh", "TS → Telangana", "BLR → Bengaluru"] },
+  { plan_field: "pincodes", standardized_columns: ["current pincode"] },
+  { plan_field: "languages", standardized_columns: ["teaching languages", "row text", "résumé text"] },
+  { plan_field: "grades", standardized_columns: ["levels / grades", "row text", "résumé text"] },
+  { plan_field: "minimum_experience_months", standardized_columns: ["experience in months"] },
+  { plan_field: "work_mode", standardized_columns: ["preferred work mode"] },
+  { plan_field: "employment_statuses", standardized_columns: ["Vedantu employment history"] },
+  { plan_field: "minimum_views", standardized_columns: ["profile view count"] },
+  { plan_field: "minimum_calls", standardized_columns: ["recruiter call count"] },
+  { plan_field: "maximum_calls", standardized_columns: ["recruiter call count"] },
+  { plan_field: "maximum_age_days", standardized_columns: ["latest application timestamp"] },
+  { plan_field: "keywords", standardized_columns: ["standardized row text", "parsed résumé text"], resolution: "Use only for a meaningful employer, title, skill or context not represented by a structured field. Search row text first, then parsed résumé text." },
+];
+
 const SYSTEM_PROMPT = `You are the search planner for an internal recruitment repository. Convert the recruiter's natural-language request into a precise search plan.
 
 Rules:
@@ -52,6 +70,9 @@ Rules:
 - A criterion may appear in exactly one bucket. Never repeat the same track, subject, exam, location, language, grade, keyword, employment state or work mode across Required, Preferred and Excluded.
 - Preserve alternatives: "JEE or NEET" means either exam may match, not that every candidate must match both.
 - Use only filters this tool can execute: profile track, subject/function, exam, location or pincode, language, grade, experience, work mode, employment status, views, calls, freshness window and searchable row/resume context. Put unsupported but searchable concepts in keywords; never invent a filter.
+- Use the CURRENT REPOSITORY SEARCH CATALOG below as the authoritative list of searchable standardized columns and current values. Prefer a structured field whenever a phrase maps to one. Use keywords only for the remaining meaningful concept.
+- Words that only connect the request—such as if, but, and, in, at, from, who, that, can, have, worked and looking for—are grammar, not keywords. The word "or" controls alternatives but is not itself searchable.
+- Never duplicate a structured concept in keywords. For example, a date window belongs only in maximum_age_days, and Math belongs only in subjects as Mathematics.
 - Expand common Indian recruiting abbreviations when the user uses them. Examples: AP -> Andhra Pradesh, TS -> Telangana, NCR -> Delhi NCR, BLR -> Bengaluru, HYD -> Hyderabad.
 - Excluded must stay completely empty unless the current message explicitly says exclude, excluding, without, except, avoid, not, no, do not show or an equivalent negative instruction.
 - A central noun phrase such as "JEE Physics teacher in Telangana" normally makes Teacher, Physics, JEE and Telangana required unless the user weakens it.
@@ -63,6 +84,7 @@ Rules:
 - Never add facts the recruiter did not request. Never infer or search protected or sensitive traits such as gender, religion, caste, age, disability, health, marital status or ethnicity.
 - The semantic_query should be a compact, search-oriented restatement using useful equivalents, not a copy of filler words.
 - Example: "Early learner teachers who have worked in Cuemath" requires Teacher plus the keywords "early learner" and "Cuemath". Subjects, exams, locations, languages, grades, employment statuses, work mode, contact status, Preferred and Excluded must all remain empty.
+- Example: "Math teachers in Tamil Nadu worked in Unacademy" requires track=Teacher, subjects=[Mathematics], locations=[Tamil Nadu] and keywords=[Unacademy]. "in" and "worked in" are grammar. Do not infer Tamil as a language from the location Tamil Nadu.
 - Return only the requested JSON.`;
 
 function text(value, max = 160) {
@@ -71,6 +93,19 @@ function text(value, max = 160) {
 
 function uniqueStrings(value, max = 12) {
   return [...new Set((Array.isArray(value) ? value : []).map((item) => text(item, 120)).filter(Boolean))].slice(0, max);
+}
+
+function repositorySearchCatalog(repository = {}) {
+  return {
+    searchable_fields: SEARCH_FIELD_CONTRACT,
+    current_repository_values: {
+      subjects_and_functions: uniqueStrings(repository.subjects, 80),
+      languages: uniqueStrings(repository.languages, 40),
+      work_modes: uniqueStrings(repository.workModes, 10),
+      experience_filters: (Array.isArray(repository.experience) ? repository.experience : []).slice(0, 20)
+        .map((item) => ({ months: integer(item?.value, 0, 600), label: text(item?.label, 80) })),
+    },
+  };
 }
 
 function integer(value, minimum, maximum, fallback = 0) {
@@ -437,16 +472,18 @@ export function groundSearchPlan(value = {}, query = "", options = {}) {
   return output;
 }
 
-export async function createAiSearchPlan(env, query) {
+export async function createAiSearchPlan(env, query, repository = {}) {
   const model = text(env?.AI_SEARCH_MODEL || env?.AI_MODEL || DEFAULT_SEARCH_MODEL, 120);
   const effort = /^gpt-5(?:$|-mini|-nano|-2025)/.test(model) ? "minimal" : "low";
+  const catalog = repositorySearchCatalog(repository);
+  const systemPrompt = `${SYSTEM_PROMPT}\n\nCURRENT REPOSITORY SEARCH CATALOG:\n${JSON.stringify(catalog)}`;
   const response = await openAiFetch(env, "/responses", {
     method: "POST",
     body: JSON.stringify({
       model,
       store: false,
       input: [
-        { role: "system", content: [{ type: "input_text", text: SYSTEM_PROMPT }] },
+        { role: "system", content: [{ type: "input_text", text: systemPrompt }] },
         { role: "user", content: [{ type: "input_text", text: text(query, 500) }] },
       ],
       reasoning: { effort },
@@ -562,7 +599,7 @@ const CRITERION_DATABASE_FIELDS = {
   pincodes: "standardized row",
   languages: "standardized row + résumé text",
   grades: "standardized row + résumé text",
-  keywords: "row + résumé text",
+  keywords: "standardized row, then résumé text",
   employment_statuses: "employment history",
   minimum_experience_months: "experience months",
   work_mode: "work mode",
@@ -587,7 +624,7 @@ export function describeSearchPlan(plan) {
   const chips = [];
   const labels = {
     subjects: "Subject", exams: "Exam", locations: "Location", pincodes: "Pincode", languages: "Language",
-    grades: "Grade", keywords: "Context", employment_statuses: "Employment",
+    grades: "Grade", keywords: "Row / résumé", employment_statuses: "Employment",
   };
   for (const importance of ["required", "preferred", "excluded"]) {
     const bucket = safe[importance];

@@ -22,6 +22,21 @@ test("employer names remain mandatory beside structured teaching criteria", () =
   assert.deepEqual(intent.keywords, ["unacademy"]);
 });
 
+test("field routing separates Tamil Nadu from Tamil language and keeps the employer", () => {
+  const intent = parseSearchIntent("Math teachers in Tamil Nadu worked in Unacademy");
+  assert.equal(intent.track, "Teacher");
+  assert.deepEqual(intent.subjects, ["Mathematics"]);
+  assert.deepEqual(intent.locations, ["Tamil Nadu"]);
+  assert.deepEqual(intent.languages, []);
+  assert.deepEqual(intent.keywords, ["unacademy"]);
+});
+
+test("common abbreviated subjects map to the standardized subject column", () => {
+  const intent = parseSearchIntent("Chem teachers in Tamil Nadu worked in Unacademy");
+  assert.deepEqual(intent.subjects, ["Chemistry"]);
+  assert.deepEqual(intent.keywords, ["unacademy"]);
+});
+
 test("working for a named company is not mistaken for a location", () => {
   const intent = parseSearchIntent("Early learner teachers who have worked in Cuemath");
   assert.equal(intent.track, "Teacher");
