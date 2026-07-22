@@ -178,6 +178,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .understood-heading b { font-size: 9px; }
 .understood-heading p { margin-top: 2px; color: #7357a0; font-size: 8px; line-height: 1.4; }
 .understood-heading em { padding: 4px 7px; border-radius: 10px; color: #6844a6; background: white; font-size: 6px; font-style: normal; font-weight: 800; text-transform: uppercase; }
+.plan-notice { margin-top: 9px; padding: 7px 9px; display: flex; align-items: center; gap: 7px; border: 1px solid #f1cabf; border-radius: 7px; color: #864233; background: #fff7f4; font-size: 7px; line-height: 1.4; }
+.plan-notice b { flex: 0 0 auto; color: #b34d35; font-size: 6px; text-transform: uppercase; }
 .criteria-group { margin-top: 9px; display: grid; grid-template-columns: 92px 1fr; align-items: start; gap: 8px; }
 .criteria-group > b { padding-top: 3px; color: #745e98; font-size: 6px; text-transform: uppercase; }
 .criteria-group > b small { display: block; margin-top: 2px; color: #9687ad; font-size: 5px; font-weight: 600; letter-spacing: 0; text-transform: none; }

@@ -5,6 +5,7 @@ const STOP_WORDS = new Set([
   "year", "years", "have", "has", "had", "work", "worked", "working", "prefer", "preferred", "preferably",
   "ideally", "bonus", "must", "required", "exclude", "excluding", "without", "not", "no", "previous",
   "call", "calls", "called", "contact", "contacted", "view", "views", "teachers",
+  "speak", "speaks", "speaking", "teach", "teaches", "taught", "dont", "include", "including",
 ]);
 
 const SYNONYMS = {
@@ -26,7 +27,7 @@ const SUBJECT_TERMS = [
   { label: "Mathematics", terms: ["mathematics", "maths", "math"] },
   { label: "Physics", terms: ["physics"] },
   { label: "Chemistry", terms: ["chemistry"] },
-  { label: "Biology", terms: ["biology"] },
+  { label: "Biology", terms: ["biology", "bio"] },
   { label: "English", terms: ["english"] },
   { label: "Computer Science", terms: ["computer science"] },
   { label: "Coding", terms: ["coding", "programming"] },
@@ -184,6 +185,20 @@ function findExams(query) {
   return exams;
 }
 
+function examMatchMode(query, exams) {
+  if ((exams || []).length < 2) return "all";
+  const normalized = String(query || "").toLowerCase().replace(/[^a-z0-9/]+/g, " ").trim();
+  const exam = "(?:jee(?: main| advanced)?|neet(?: ug)?|olympiad|ntse|foundation)";
+  return new RegExp(`\\b${exam}\\s*(?:or|/)\\s*${exam}\\b`).test(normalized) ? "any" : "all";
+}
+
+function subjectSearchTokens(subjects) {
+  return (subjects || []).flatMap((label) => {
+    const subject = SUBJECT_TERMS.find((item) => item.label === label);
+    return subject ? subject.terms.flatMap(tokenize) : tokenize(label);
+  });
+}
+
 export function parseSearchIntent(query) {
   const normalized = String(query || "").toLowerCase();
   const locations = findLocations(query);
@@ -196,6 +211,7 @@ export function parseSearchIntent(query) {
     for (let grade = start; grade <= Math.min(end, 12); grade += 1) grades.push(grade);
   });
   const experienceMatch = normalized.match(/(\d+)\s*(?:\+\s*)?(?:years?|yrs?)/);
+  const exams = findExams(query);
   const intent = {
     track: normalized.includes("non teaching") || normalized.includes("non-teaching")
       ? "Non-teaching"
@@ -203,7 +219,8 @@ export function parseSearchIntent(query) {
         ? "Teacher"
         : "All",
     subjects: unique(findSubjects(query)),
-    exams: findExams(query),
+    exams,
+    examMatchMode: examMatchMode(query, exams),
     languages: findKnown(query, LANGUAGES),
     locations: unique(locations),
     pincodes,
@@ -214,7 +231,7 @@ export function parseSearchIntent(query) {
   };
   const knownTokens = new Set([
     ...tokenize(intent.track),
-    ...intent.subjects.flatMap((value) => tokenize(value)),
+    ...subjectSearchTokens(intent.subjects),
     ...intent.exams.flatMap((value) => tokenize(value)),
     ...intent.languages.flatMap((value) => tokenize(value)),
     ...locationSearchTerms(intent.locations).flatMap((value) => tokenize(value)),
@@ -259,7 +276,12 @@ export function matchesMandatoryIntent(candidate, intent) {
   if (intent.track !== "All" && candidate.track !== intent.track) return false;
   const subjectText = `${candidate.subject_display || ""} ${candidate.role || ""}`;
   if (intent.subjects.length && !intent.subjects.some((subject) => hasTerm(subjectText, subject))) return false;
-  if (intent.exams.length && !intent.exams.every((exam) => candidateSupportsExam(candidate, exam))) return false;
+  if (intent.exams.length) {
+    const matchesExam = intent.examMatchMode === "any"
+      ? intent.exams.some((exam) => candidateSupportsExam(candidate, exam))
+      : intent.exams.every((exam) => candidateSupportsExam(candidate, exam));
+    if (!matchesExam) return false;
+  }
   if (intent.languages.length && !intent.languages.every((language) => hasTerm(candidate.languages_display, language))) return false;
   const locationText = `${candidate.city || ""} ${candidate.state || ""}`;
   if (intent.locations.length && !locationSearchTerms(intent.locations).some((location) => hasTerm(locationText, location))) return false;

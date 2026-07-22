@@ -244,13 +244,19 @@ async function getCandidates(request, env, options = {}) {
     addLikeAny("c.search_text", terms);
     addEvidenceRequirement("subject", terms);
   }
-  for (const exam of intent.exams) {
-    const terms = exam === "JEE" ? ["jee", "jee main", "jee advanced", "iit jee"]
+  const examTerms = intent.exams.map((exam) => exam === "JEE" ? ["jee", "jee main", "jee advanced", "iit jee"]
       : exam === "NEET UG" ? ["neet", "neet ug"]
         : exam === "Olympiad / NTSE" ? ["olympiad", "ntse"]
-          : [exam.toLowerCase()];
+          : [exam.toLowerCase()]);
+  if (intent.examMatchMode === "any") {
+    const terms = examTerms.flat();
     addLikeAny("c.search_text", terms);
     addEvidenceRequirement("exam", terms);
+  } else {
+    for (const terms of examTerms) {
+      addLikeAny("c.search_text", terms);
+      addEvidenceRequirement("exam", terms);
+    }
   }
   if (language && language !== "All languages") addLikeAny("c.search_text", [language]);
   for (const intentLanguage of intent.languages) addLikeAny("c.search_text", [intentLanguage]);

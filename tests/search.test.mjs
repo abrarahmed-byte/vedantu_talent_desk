@@ -91,6 +91,34 @@ test("JEE is parsed as an explicit teaching-level requirement", () => {
   assert.deepEqual(intent.exams, ["JEE"]);
 });
 
+test("Bio is normalized to Biology instead of becoming a loose keyword", () => {
+  const intent = parseSearchIntent("Bio");
+  assert.deepEqual(intent.subjects, ["Biology"]);
+  assert.deepEqual(intent.keywords, []);
+});
+
+test("natural grammar is removed and JEE or NEET remains an alternative", () => {
+  const intent = parseSearchIntent("JEE or NEET Teacher from Tamil Nadu who can speak Tamil and Teaches Bio");
+  assert.equal(intent.track, "Teacher");
+  assert.deepEqual(intent.subjects, ["Biology"]);
+  assert.deepEqual(intent.exams, ["JEE", "NEET UG"]);
+  assert.equal(intent.examMatchMode, "any");
+  assert.deepEqual(intent.locations, ["Tamil Nadu"]);
+  assert.deepEqual(intent.languages, ["Tamil"]);
+  assert.deepEqual(intent.keywords, []);
+});
+
+test("either JEE or NEET can satisfy an explicitly alternative exam request", () => {
+  const intent = parseSearchIntent("JEE or NEET Teacher from Tamil Nadu who speaks Tamil and teaches Bio");
+  const base = {
+    track: "Teacher", subject_display: "Biology", languages_display: "Tamil", city: "Chennai",
+    state: "Tamil Nadu", experience_months: 24,
+  };
+  assert.equal(matchesMandatoryIntent({ ...base, grades_display: "JEE Main" }, intent), true);
+  assert.equal(matchesMandatoryIntent({ ...base, grades_display: "NEET UG" }, intent), true);
+  assert.equal(matchesMandatoryIntent({ ...base, grades_display: "Foundation" }, intent), false);
+});
+
 test("a Foundation-only Physics profile cannot satisfy a JEE Physics search", () => {
   const intent = parseSearchIntent("JEE Physics");
   const foundationOnly = {

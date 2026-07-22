@@ -118,3 +118,44 @@ test("AI hallucinations are removed from a Cuemath early-learner search", async 
   const afterRecruiterEdit = parseClientSearchPlan(JSON.stringify(plan), "Early learner teachers who have worked in Cuemath");
   assert.deepEqual(afterRecruiterEdit.required.keywords, ["Cuemath"]);
 });
+
+test("AI plan converts grammar into structured Biology and alternative exams", async () => {
+  const raw = {
+    interpretation: "JEE and NEET teacher with Tamil and Bio context",
+    semantic_query: "JEE NEET teacher Tamil Nadu Tamil Bio speak teaches",
+    required: bucket({
+      track: "Teacher", subjects: ["Biology"], exams: ["JEE", "NEET UG"], locations: ["Tamil Nadu"],
+      languages: ["Tamil"], keywords: ["Tamil", "Bio", "speak", "teaches"],
+    }),
+    preferred: bucket(), excluded: bucket(), freshest_first: false, confidence: 0.94,
+  };
+  const env = { AI: { run: async () => ({ response: JSON.stringify(raw) }) } };
+  const plan = await createAiSearchPlan(env, "JEE or NEET Teacher from Tamil Nadu who can speak Tamil and Teaches Bio");
+  assert.deepEqual(plan.required.subjects, ["Biology"]);
+  assert.deepEqual(plan.required.exams, ["JEE", "NEET UG"]);
+  assert.equal(plan.match_modes.exams, "any");
+  assert.deepEqual(plan.required.locations, ["Tamil Nadu"]);
+  assert.deepEqual(plan.required.languages, ["Tamil"]);
+  assert.deepEqual(plan.required.keywords, []);
+  assert.ok(describeSearchPlan(plan).filter((item) => item.field === "exams").every((item) => item.label.startsWith("Exam option:")));
+});
+
+test("protected gender instructions are ignored and explained", async () => {
+  const raw = {
+    interpretation: "Exclude female candidates",
+    semantic_query: "JEE NEET Tamil Bio female",
+    required: bucket({ track: "Teacher", subjects: ["Biology"], exams: ["JEE", "NEET UG"], locations: ["Tamil Nadu"], languages: ["Tamil"], keywords: ["speak", "dont", "include"] }),
+    preferred: bucket(), excluded: bucket({ keywords: ["female"] }), freshest_first: false, confidence: 0.91,
+  };
+  const env = { AI: { run: async () => ({ response: JSON.stringify(raw) }) } };
+  const query = "JEE or NEET Teacher from Tamil Nadu who can speak Tamil and Teaches Bio dont include female";
+  const plan = await createAiSearchPlan(env, query);
+  assert.deepEqual(plan.required.keywords, []);
+  assert.deepEqual(plan.excluded.keywords, []);
+  assert.ok(plan.notices.some((notice) => /Gender filtering was ignored/i.test(notice)));
+  assert.doesNotMatch(plan.interpretation, /female|speak|dont|include/i);
+
+  const fallback = fallbackSearchPlan(query);
+  assert.deepEqual(fallback.required.keywords, []);
+  assert.ok(fallback.notices.length > 0);
+});

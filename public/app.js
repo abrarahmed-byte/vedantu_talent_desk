@@ -195,9 +195,11 @@ function renderSearchPlan(plan = state.searchPlan, criteria = state.searchCriter
   }).join("");
   const modeLabel = mode === "ai" ? "AI interpreted" : mode === "fallback" ? "Fast fallback" : "Search plan";
   const verificationLabel = plan.grounded ? "Checked against your words" : `${Math.round((Number(plan.confidence) || 0) * 100)}% confidence`;
+  const notices = (Array.isArray(plan.notices) ? plan.notices : [])
+    .map((notice) => `<div class="plan-notice"><b>Ignored safely</b><span>${escapeHtml(notice)}</span></div>`).join("");
   panel.classList.add("show");
   panel.classList.remove("planning");
-  panel.innerHTML = `<div class="understood-heading"><span>&#10022;</span><div><b>${escapeHtml(modeLabel)}</b><p>${escapeHtml(plan.interpretation || "Search criteria prepared")}</p></div><em>${escapeHtml(verificationLabel)}</em></div>${groups}<small>${warning ? `${escapeHtml(warning)} ` : ""}Required filters the list. Preferred changes ranking only. Excluded removes profiles and is used only when your request explicitly says not, exclude, without or similar.</small>`;
+  panel.innerHTML = `<div class="understood-heading"><span>&#10022;</span><div><b>${escapeHtml(modeLabel)}</b><p>${escapeHtml(plan.interpretation || "Search criteria prepared")}</p></div><em>${escapeHtml(verificationLabel)}</em></div>${notices}${groups}<small>${warning ? `${escapeHtml(warning)} ` : ""}Required filters the list. Preferred changes ranking only. Excluded removes profiles and is used only when your request explicitly says not, exclude, without or similar.</small>`;
   panel.querySelectorAll("[data-plan-field]").forEach((button) => button.onclick = () => removeSearchCriterion(button.dataset.planImportance, button.dataset.planField, button.dataset.planValue));
 }
 

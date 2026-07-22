@@ -49,6 +49,7 @@ Rules:
 - Words such as must, only, required and needs mean required. Words such as prefer, ideally and bonus mean preferred. Words such as exclude, without, not and do not show mean excluded. "No previous calls" is the special required constraint maximum_calls=0, not an Excluded chip.
 - Every non-empty field must be supported by words in the current user message. Start with every field empty; never reuse details from an earlier request, an example, or a common candidate profile.
 - A criterion may appear in exactly one bucket. Never repeat the same track, subject, exam, location, language, grade, keyword, employment state or work mode across Required, Preferred and Excluded.
+- Preserve alternatives: "JEE or NEET" means either exam may match, not that every candidate must match both.
 - Excluded must stay completely empty unless the current message explicitly says exclude, excluding, without, except, avoid, not, no, do not show or an equivalent negative instruction.
 - A central noun phrase such as "JEE Physics teacher in Telangana" normally makes Teacher, Physics, JEE and Telangana required unless the user weakens it.
 - Translate equivalent concepts into common recruitment terms. Examples: engineering entrance coaching -> JEE; senior secondary -> grades 11 and 12; classroom teaching -> Offline / On-site; online tutor -> Online / Remote.
@@ -101,6 +102,24 @@ function sanitizeBucket(value = {}) {
   return bucket;
 }
 
+const PROTECTED_CRITERIA = [
+  { label: "Gender", pattern: /\b(?:female|male|woman|women|man|men|gender|nonbinary|non binary|transgender)\b/i },
+  { label: "Religion or caste", pattern: /\b(?:religion|religious|caste|hindu|muslim|christian|sikh|jain|buddhist)\b/i },
+  { label: "Age", pattern: /\b(?:age|aged|years? old)\b/i },
+  { label: "Disability or health", pattern: /\b(?:disability|disabled|health|medical|pregnant|pregnancy)\b/i },
+  { label: "Marital status or ethnicity", pattern: /\b(?:marital|married|unmarried|single|ethnicity|ethnic|race|racial)\b/i },
+];
+
+function protectedCriteriaNotices(query) {
+  const labels = PROTECTED_CRITERIA.filter((criterion) => criterion.pattern.test(String(query || ""))).map((criterion) => criterion.label);
+  if (!labels.length) return [];
+  return [`${labels.join(", ")} filtering was ignored. Talent Desk does not filter candidates using protected personal attributes.`];
+}
+
+function containsProtectedCriterion(value) {
+  return PROTECTED_CRITERIA.some((criterion) => criterion.pattern.test(String(value || "")));
+}
+
 export function sanitizeSearchPlan(value = {}, fallbackQuery = "") {
   const fallback = fallbackSearchPlan(fallbackQuery);
   return {
@@ -111,6 +130,8 @@ export function sanitizeSearchPlan(value = {}, fallbackQuery = "") {
     excluded: sanitizeBucket(value.excluded),
     freshest_first: Boolean(value.freshest_first),
     confidence: Math.max(0, Math.min(1, Number(value.confidence) || 0)),
+    match_modes: { exams: value?.match_modes?.exams === "any" ? "any" : "all" },
+    notices: uniqueStrings(value.notices, 4),
     grounded: Boolean(value.grounded),
     guardrails_applied: Boolean(value.guardrails_applied),
   };
@@ -127,7 +148,7 @@ export function fallbackSearchPlan(query) {
   required.languages = [...intent.languages];
   required.grades = [...intent.grades];
   required.minimum_experience_months = intent.minimumExperienceMonths;
-  required.keywords = [...(intent.keywords || [])];
+  required.keywords = [...(intent.keywords || [])].filter((keyword) => !containsProtectedCriterion(keyword));
   return {
     interpretation: query ? `Search for ${text(query, 260)}` : "All profiles",
     semantic_query: text(query, 360),
@@ -136,6 +157,8 @@ export function fallbackSearchPlan(query) {
     excluded: emptyBucket(),
     freshest_first: intent.freshestFirst,
     confidence: 0,
+    match_modes: { exams: intent.examMatchMode === "any" ? "any" : "all" },
+    notices: protectedCriteriaNotices(query),
     grounded: true,
     guardrails_applied: true,
   };
@@ -202,6 +225,18 @@ function groundedKeyword(value, query) {
   const queryTokens = new Set(tokenize(query).map(tokenStem));
   const valueTokens = tokenize(value).map(tokenStem);
   return Boolean(valueTokens.length) && valueTokens.every((token) => queryTokens.has(token));
+}
+
+function keywordCoveredByStructuredIntent(value, intent) {
+  const keywordIntent = parseSearchIntent(value);
+  const overlaps = (left, right) => left.some((item) => right.some((candidate) => fieldValueKey("keywords", item) === fieldValueKey("keywords", candidate)));
+  return (keywordIntent.track !== "All" && keywordIntent.track === intent.track)
+    || overlaps(keywordIntent.subjects, intent.subjects)
+    || overlaps(keywordIntent.exams, intent.exams)
+    || overlaps(keywordIntent.languages, intent.languages)
+    || overlaps(keywordIntent.locations, intent.locations)
+    || overlaps(keywordIntent.pincodes || [], intent.pincodes || [])
+    || overlaps((keywordIntent.grades || []).map(String), (intent.grades || []).map(String));
 }
 
 function explicitWorkMode(query) {
@@ -275,6 +310,8 @@ export function groundSearchPlan(value = {}, query = "", options = {}) {
     required: emptyBucket(), preferred: emptyBucket(), excluded: emptyBucket(),
     freshest_first: /\b(?:fresh|latest|newest|recent)\b/i.test(query) && (addMissing || safe.freshest_first),
     confidence: safe.confidence,
+    match_modes: { exams: parsed.examMatchMode === "any" ? "any" : "all" },
+    notices: protectedCriteriaNotices(query),
     grounded: true,
     guardrails_applied: true,
   };
@@ -313,7 +350,7 @@ export function groundSearchPlan(value = {}, query = "", options = {}) {
   const keywordOccurrences = new Map();
   for (const importance of ["required", "preferred", "excluded"]) {
     for (const keyword of safe[importance].keywords) {
-      if (!groundedKeyword(keyword, query)) continue;
+      if (!groundedKeyword(keyword, query) || containsProtectedCriterion(keyword) || keywordCoveredByStructuredIntent(keyword, parsed)) continue;
       const key = normalized(keyword);
       if (!keywordOccurrences.has(key)) keywordOccurrences.set(key, { value: keyword, occurrences: [] });
       keywordOccurrences.get(key).occurrences.push(importance);
@@ -339,7 +376,7 @@ export function groundSearchPlan(value = {}, query = "", options = {}) {
   const keywordTokens = new Set(["required", "preferred", "excluded"].flatMap((importance) => output[importance].keywords.flatMap((value) => tokenize(value).map(tokenStem))));
   if (addMissing) {
     for (const keyword of parsed.keywords || []) {
-      if (keywordTokens.has(tokenStem(keyword))) continue;
+      if (keywordTokens.has(tokenStem(keyword)) || containsProtectedCriterion(keyword) || keywordCoveredByStructuredIntent(keyword, parsed)) continue;
       const importance = importanceForMention(query, "keywords", keyword);
       output[importance].keywords.push(keyword);
       keywordTokens.add(tokenStem(keyword));
@@ -424,6 +461,7 @@ export function searchPlanToIntent(plan, query = "") {
     freshestFirst: Boolean(plan?.freshest_first),
     tokens: expandTokens(tokenize(allWords || query)),
     keywords: required.keywords,
+    examMatchMode: plan?.match_modes?.exams === "any" ? "any" : "all",
   };
 }
 
@@ -491,7 +529,10 @@ export function describeSearchPlan(plan) {
     const bucket = safe[importance];
     if (bucket.track !== "All") chips.push({ importance, field: "track", value: bucket.track, label: bucket.track });
     for (const [field, label] of Object.entries(labels)) {
-      for (const value of bucket[field]) chips.push({ importance, field, value: String(value), label: `${label}: ${value}` });
+      for (const value of bucket[field]) {
+        const fieldLabel = field === "exams" && safe.match_modes.exams === "any" ? "Exam option" : label;
+        chips.push({ importance, field, value: String(value), label: `${fieldLabel}: ${value}` });
+      }
     }
     if (bucket.minimum_experience_months) chips.push({ importance, field: "minimum_experience_months", value: String(bucket.minimum_experience_months), label: `${bucket.minimum_experience_months}+ months experience` });
     if (bucket.work_mode) chips.push({ importance, field: "work_mode", value: bucket.work_mode, label: bucket.work_mode });
