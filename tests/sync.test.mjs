@@ -101,13 +101,14 @@ test("temporary connector failures are marked for an automatic retry", async (co
 });
 
 test("interactive Sheet previews wait for Apps Script cold starts without promising a background retry", () => {
-  assert.equal(connectorTimeoutMs("preview"), 30000);
+  assert.equal(connectorTimeoutMs("preview"), 90000);
+  assert.equal(connectorTimeoutMs("readRows"), 90000);
   assert.match(connectorTimeoutMessage("preview"), /Select Read columns again/);
   assert.doesNotMatch(connectorTimeoutMessage("preview"), /retry automatically/i);
   assert.match(connectorTimeoutMessage("readRows"), /background sync will retry automatically/i);
 });
 
-test("free-plan source batches stay below the Worker subrequest ceiling", () => {
-  assert.equal(APPLICATION_SYNC_BATCH_SIZE, 2);
-  assert.equal(EMPLOYMENT_SYNC_BATCH_SIZE, 4);
+test("large source batches use the configured internal-service allowance", () => {
+  assert.equal(APPLICATION_SYNC_BATCH_SIZE, 50);
+  assert.equal(EMPLOYMENT_SYNC_BATCH_SIZE, 50);
 });

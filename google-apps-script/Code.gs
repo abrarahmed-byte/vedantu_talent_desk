@@ -92,7 +92,122 @@ function headers_(sheet, requestedHeaderRow) {
     .map(function (value) { return String(value || '').trim(); });
 }
 
+function advancedSheetsAvailable_() {
+  return typeof Sheets !== 'undefined' && Sheets.Spreadsheets && Sheets.Spreadsheets.Values;
+}
+
+function sheetMetadata_(spreadsheetId, tabName) {
+  var cache = CacheService.getScriptCache();
+  var cacheKey = 'sheet-meta:' + spreadsheetId + ':' + String(tabName || '');
+  var cached = cache.get(cacheKey);
+  if (cached) return JSON.parse(cached);
+  var spreadsheet = Sheets.Spreadsheets.get(spreadsheetId, {
+    fields: 'sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))'
+  });
+  var sheets = spreadsheet.sheets || [];
+  var selected = null;
+  for (var index = 0; index < sheets.length; index += 1) {
+    var properties = sheets[index].properties || {};
+    if ((!tabName && !selected) || properties.title === tabName) selected = properties;
+  }
+  if (!selected) throw new Error('The requested Sheet tab was not found.');
+  var metadata = {
+    title: selected.title,
+    sheetId: selected.sheetId,
+    rowCount: Math.max(1, Number(selected.gridProperties && selected.gridProperties.rowCount) || 1),
+    columnCount: Math.min(250, Math.max(1, Number(selected.gridProperties && selected.gridProperties.columnCount) || 1))
+  };
+  cache.put(cacheKey, JSON.stringify(metadata), 300);
+  return metadata;
+}
+
+function columnLetter_(columnNumber) {
+  var value = Math.max(1, Number(columnNumber) || 1);
+  var result = '';
+  while (value > 0) {
+    value -= 1;
+    result = String.fromCharCode(65 + (value % 26)) + result;
+    value = Math.floor(value / 26);
+  }
+  return result;
+}
+
+function quotedTab_(title) {
+  return "'" + String(title || '').replace(/'/g, "''") + "'";
+}
+
+function sheetValues_(spreadsheetId, metadata, startRow, endRow, columnCount) {
+  var range = quotedTab_(metadata.title) + '!A' + startRow + ':' + columnLetter_(columnCount) + endRow;
+  var response = Sheets.Spreadsheets.Values.get(spreadsheetId, range, {
+    valueRenderOption: 'FORMATTED_VALUE',
+    dateTimeRenderOption: 'FORMATTED_STRING'
+  });
+  return response.values || [];
+}
+
+function fastHeaders_(spreadsheetId, metadata, requestedHeaderRow) {
+  var headerRow = Math.min(Math.max(1, Number(requestedHeaderRow) || 1), metadata.rowCount);
+  var cache = CacheService.getScriptCache();
+  var cacheKey = 'sheet-headers:' + spreadsheetId + ':' + metadata.sheetId + ':' + headerRow;
+  var cached = cache.get(cacheKey);
+  if (cached) return { headerRow: headerRow, headers: JSON.parse(cached) };
+  var values = sheetValues_(spreadsheetId, metadata, headerRow, headerRow, metadata.columnCount);
+  var headers = (values[0] || []).map(function (value) { return String(value || '').trim(); });
+  while (headers.length && !headers[headers.length - 1]) headers.pop();
+  cache.put(cacheKey, JSON.stringify(headers), 300);
+  return { headerRow: headerRow, headers: headers };
+}
+
+function previewFast_(payload) {
+  var metadata = sheetMetadata_(payload.spreadsheetId, payload.tabName);
+  var header = fastHeaders_(payload.spreadsheetId, metadata, payload.headerRow);
+  return {
+    ok: true,
+    tabName: metadata.title,
+    headerRow: header.headerRow,
+    headers: header.headers,
+    totalRows: metadata.rowCount,
+    totalRowsEstimated: true
+  };
+}
+
+function readRowsFast_(payload) {
+  var metadata = sheetMetadata_(payload.spreadsheetId, payload.tabName);
+  var header = fastHeaders_(payload.spreadsheetId, metadata, payload.headerRow);
+  var startRow = Math.max(header.headerRow + 1, Number(payload.startRow) || header.headerRow + 1);
+  var limit = Math.min(200, Math.max(1, Number(payload.limit) || 200));
+  if (startRow > metadata.rowCount || !header.headers.length) {
+    return { ok: true, tabName: metadata.title, headerRow: header.headerRow, headers: header.headers, rows: [], totalRows: metadata.rowCount, nextRow: startRow, done: true };
+  }
+  var endRow = Math.min(metadata.rowCount, startRow + limit - 1);
+  var requestedRows = endRow - startRow + 1;
+  var values = sheetValues_(payload.spreadsheetId, metadata, startRow, endRow, header.headers.length);
+  var rows = [];
+  values.forEach(function (valuesRow, offset) {
+    var hasValue = valuesRow.some(function (value) { return String(value || '').trim() !== ''; });
+    if (!hasValue) return;
+    var record = { _sheetRow: startRow + offset };
+    header.headers.forEach(function (headerName, column) {
+      if (headerName) record[headerName] = valuesRow[column] || '';
+    });
+    rows.push(record);
+  });
+  var reachedBlankTail = values.length < requestedRows;
+  var actualLastRow = reachedBlankTail ? Math.max(header.headerRow, startRow + values.length - 1) : metadata.rowCount;
+  return {
+    ok: true,
+    tabName: metadata.title,
+    headerRow: header.headerRow,
+    headers: header.headers,
+    rows: rows,
+    totalRows: actualLastRow,
+    nextRow: endRow + 1,
+    done: endRow >= metadata.rowCount || reachedBlankTail
+  };
+}
+
 function preview_(payload) {
+  if (advancedSheetsAvailable_()) return previewFast_(payload);
   var sheet = sheet_(payload.spreadsheetId, payload.tabName);
   var headerRow = headerRow_(sheet, payload.headerRow);
   return {
@@ -105,6 +220,7 @@ function preview_(payload) {
 }
 
 function readRows_(payload) {
+  if (advancedSheetsAvailable_()) return readRowsFast_(payload);
   var sheet = sheet_(payload.spreadsheetId, payload.tabName);
   var headerRow = headerRow_(sheet, payload.headerRow);
   var headers = headers_(sheet, headerRow);

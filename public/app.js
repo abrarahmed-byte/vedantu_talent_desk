@@ -1039,7 +1039,7 @@ async function readSourceColumns() {
   status.textContent = "Connecting securely to Google Sheets… usually under 10 seconds.";
   const slowNotice = setTimeout(() => {
     button.textContent = "Still opening Sheet…";
-    status.textContent = "Google is taking longer than usual to open this Sheet. Talent Desk will wait up to 30 seconds.";
+    status.textContent = "This is a large Sheet, so Google may take longer on the first connection. Talent Desk will wait up to 90 seconds.";
   }, 8000);
   try {
     state.sourcePreview = await api("/api/admin/sources/preview", {

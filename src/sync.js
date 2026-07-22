@@ -54,8 +54,8 @@ export const EMPLOYMENT_FIELDS = [
   { key: "contractEndDate", label: "Contract end date", required: false, aliases: ["contract end date"] },
 ];
 
-export const APPLICATION_SYNC_BATCH_SIZE = 2;
-export const EMPLOYMENT_SYNC_BATCH_SIZE = 4;
+export const APPLICATION_SYNC_BATCH_SIZE = 50;
+export const EMPLOYMENT_SYNC_BATCH_SIZE = 50;
 const SYNC_BATCHES_PER_RUN = 1;
 
 function text(value, max = 1000) {
@@ -502,7 +502,8 @@ async function sweepEmploymentSource(env, sourceId, syncToken) {
 }
 
 export function connectorTimeoutMs(action) {
-  if (action === "preview") return 30000;
+  if (action === "preview") return 90000;
+  if (action === "readRows") return 90000;
   if (action === "readResume") return 30000;
   return 25000;
 }

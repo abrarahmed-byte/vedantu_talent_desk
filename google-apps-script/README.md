@@ -9,7 +9,9 @@ One-time setup:
 
 1. Create a standalone Apps Script project and paste `Code.gs`.
 2. In Project Settings, enable **Show appsscript.json manifest file in editor**
-   and replace it with the included `appsscript.json`.
+   and replace it with the included `appsscript.json`. The manifest enables the
+   Google Sheets v4 advanced service used for fast header and paged-row reads on
+   very large response Sheets.
 3. Select `authorizeTalentDeskAccess` in the editor, choose **Run**, and approve
    Sheets access and read-only Drive access. `SpreadsheetApp.openById()` requires
    Google's `spreadsheets` scope even though this connector only reads Sheet
@@ -32,9 +34,11 @@ URL public exposes the branded sign-in screen, not candidate records.
 The deploying account must be able to open every Sheet an Admin connects and
 every Google Drive résumé that the AI evidence pipeline processes. Google Docs are
 exported to PDF; uploaded PDF and Word résumés retain their original file type.
-The connector enforces a 5 MB résumé-processing limit. The
-connector reads at most 200 rows per request; Cloudflare continues in batches
-and updates the UI with progress and ETA.
+The connector enforces a 5 MB résumé-processing limit. Sheet sync reads only
+the requested header and row range instead of loading the full Sheet. It reads
+at most 200 rows per request; Cloudflare continues in batches and updates the UI
+with progress and ETA. This is suitable for large, continuously growing Google
+Form response Sheets.
 
 If **Profiles needing attention** shows a `DriveApp.getFileById` permission
 error, repeat steps 2, 3, and 5, then use **Retry all after fixing access** in
