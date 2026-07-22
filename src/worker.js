@@ -22,6 +22,7 @@ import {
   scoreSearchPlanPreferences,
   searchPlanToIntent,
 } from "./query-planner.js";
+import { createSearchResultsWorkbook } from "./search-export.js";
 
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
@@ -111,11 +112,13 @@ async function repositoryFilters(env) {
   };
 }
 
-function candidateResponse(row, score, searchFit = null) {
+function candidateResponse(row, score, searchFit = null, options = {}) {
   let details = {};
   let aiProfile = null;
+  let applicationHistory = [];
   try { details = JSON.parse(row.standardized_json || "{}"); } catch { details = {}; }
   try { aiProfile = row.ai_canonical_json ? JSON.parse(row.ai_canonical_json) : null; } catch { aiProfile = null; }
+  try { applicationHistory = JSON.parse(row.application_history_json || "[]"); } catch { applicationHistory = []; }
   const classification = profileClassification(aiProfile, row.track);
   const {
     standardized_json: _standardizedJson,
@@ -123,9 +126,10 @@ function candidateResponse(row, score, searchFit = null) {
     search_text: _searchText,
     row_text: _rowText,
     resume_text: _resumeText,
+    application_history_json: _applicationHistoryJson,
     ...candidate
   } = row;
-  return {
+  const response = {
     ...candidate,
     subjects: list(row.subject_display),
     grades: list(row.grades_display),
@@ -143,6 +147,12 @@ function candidateResponse(row, score, searchFit = null) {
     missing_preferences: searchFit?.missing || [],
     match_percent: score,
   };
+  if (options.includeExportFields) {
+    response.resume_text = _resumeText || aiProfile?.resume_text || "";
+    response.row_text = _rowText || "";
+    response.application_history = Array.isArray(applicationHistory) ? applicationHistory : [];
+  }
+  return response;
 }
 
 async function getSearchPlan(request, env) {
@@ -169,7 +179,7 @@ async function getSearchPlan(request, env) {
   }
 }
 
-async function getCandidates(request, env) {
+async function getCandidates(request, env, options = {}) {
   const started = Date.now();
   const url = new URL(request.url);
   const query = clean(url.searchParams.get("q"), 300);
@@ -184,7 +194,8 @@ async function getCandidates(request, env) {
   const freshnessDecayDays = Math.max(0, Math.min(3650, Math.round(Number(url.searchParams.get("freshnessDecayDays")) || 120)));
   const freshnessWeight = Math.max(0, Math.min(3, Number(url.searchParams.get("freshnessWeight")) || 1));
   const page = Math.max(1, Math.round(Number(url.searchParams.get("page")) || 1));
-  const pageSize = Math.max(10, Math.min(100, Math.round(Number(url.searchParams.get("pageSize")) || 40)));
+  const pageSizeLimit = Math.max(100, Math.min(20000, Number(options.maxPageSize) || 100));
+  const pageSize = Math.max(10, Math.min(pageSizeLimit, Math.round(Number(url.searchParams.get("pageSize")) || 40)));
   const offset = (page - 1) * pageSize;
   const includeClaims = url.searchParams.get("includeClaims") === "1";
   const clientPlan = clean(url.searchParams.get("plan"), 6000);
@@ -300,11 +311,16 @@ async function getCandidates(request, env) {
     const rankBindings = tokens.map((token) => `%${token}%`);
     const freshnessExpression = `CASE WHEN ?<=0 OR ?<=0 THEN 0 ELSE MAX(0, 10-(MAX(0,julianday('now')-julianday(c.applied_at))/?)*10)*? END`;
     const fromSql = `FROM candidates c LEFT JOIN candidate_ai_profiles ai ON ai.candidate_id=c.id${ftsJoin}`;
+    const exportColumns = options.includeExportFields ? `,
+      (SELECT json_group_array(json_object(
+        'source', s2.label, 'source_row_key', sr.source_row_key, 'applied_at', sr.applied_at,
+        'duplicate_kind', sr.duplicate_kind, 'first_seen_at', sr.first_seen_at, 'updated_at', sr.updated_at
+      )) FROM source_records sr JOIN sources s2 ON s2.id=sr.source_id WHERE sr.candidate_id=c.id) AS application_history_json` : "";
     const [totalRow, rows] = await Promise.all([
       env.DB.prepare(`SELECT COUNT(*) AS count ${fromSql}${whereSql}`).bind(...allBindings).first(),
       env.DB.prepare(`SELECT c.*, p.standardized_json, ai.status AS ai_status, ai.summary AS ai_summary,
         ai.canonical_json AS ai_canonical_json, ai.processed_at AS ai_processed_at,
-        ((${tokenExpression})*20 + ${freshnessExpression}) AS search_rank
+        ((${tokenExpression})*20 + ${freshnessExpression}) AS search_rank${exportColumns}
         ${fromSql} LEFT JOIN candidate_profiles p ON p.candidate_id=c.id${whereSql}
         ORDER BY search_rank DESC, c.applied_at DESC LIMIT ? OFFSET ?`)
         .bind(...rankBindings, freshnessDecayDays, freshnessWeight, Math.max(1, freshnessDecayDays), freshnessWeight,
@@ -317,10 +333,10 @@ async function getCandidates(request, env) {
   const scored = result.rows.map((row) => {
     const fit = scoreSearchPlanPreferences(row, searchPlan);
     const base = scoreCandidate(row, query, intent, Date.now(), { freshnessDecayDays, freshnessWeight });
-    return candidateResponse(row, Math.min(99, base + fit.bonus), fit);
+    return candidateResponse(row, Math.min(99, base + fit.bonus), fit, { includeExportFields: options.includeExportFields });
   }).sort((left, right) => right.match_percent - left.match_percent || String(right.applied_at).localeCompare(String(left.applied_at)));
   const evaluatedRow = await env.DB.prepare("SELECT COUNT(*) AS count FROM candidates").first();
-  return json({
+  const payload = {
     candidates: scored,
     total: result.total,
     evaluated: Number(evaluatedRow?.count || 0),
@@ -332,6 +348,54 @@ async function getCandidates(request, env) {
     criteria: describeSearchPlan(searchPlan),
     responseTimeMs: Date.now() - started,
     mode: `${clientPlan ? "AI-planned search" : "Indexed search"} · ${includeClaims ? "AI evidence + claims" : "verified résumé evidence preferred"}`,
+  };
+  return options.asObject ? payload : json(payload);
+}
+
+async function exportSearchResults(request, env, user) {
+  const payload = await request.json().catch(() => ({}));
+  const supplied = payload?.params && typeof payload.params === "object" ? payload.params : {};
+  const allowed = new Set(["q", "track", "subject", "language", "experience", "workMode", "minViews", "minCalls", "maxAgeDays", "freshnessWeight", "freshnessDecayDays", "includeClaims", "plan"]);
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(supplied)) {
+    if (allowed.has(key) && ["string", "number", "boolean"].includes(typeof value)) params.set(key, String(value));
+  }
+  const exportLimit = 10000;
+  params.set("page", "1");
+  params.set("pageSize", String(exportLimit));
+  const searchRequest = new Request(`${new URL(request.url).origin}/api/candidates?${params.toString()}`);
+  const results = await getCandidates(searchRequest, env, {
+    asObject: true,
+    includeExportFields: true,
+    maxPageSize: exportLimit,
+  });
+  if (results.total > exportLimit) {
+    return json({ error: `This search has ${results.total} profiles. Add one more filter so the Excel export is below ${exportLimit} rows.` }, 413);
+  }
+  const exportedAt = new Date().toISOString();
+  const query = clean(params.get("q"), 300);
+  const workbook = createSearchResultsWorkbook({
+    candidates: results.candidates,
+    exportedBy: `${user.displayName} (${user.email})`,
+    exportedAt,
+    query,
+    interpretation: results.understoodAs,
+    criteria: results.criteria,
+    filters: Object.fromEntries([...params.entries()].filter(([key]) => !["page", "pageSize", "plan"].includes(key))),
+  });
+  const detail = `${query ? `Search “${clean(query, 120)}”` : "All profiles"} · ${results.candidates.length} profiles · Excel`;
+  await env.DB.prepare(`INSERT INTO activity_logs(id, candidate_id, actor, action, detail, actor_email)
+    VALUES (?, NULL, ?, 'search_exported', ?, ?)`).bind(
+    crypto.randomUUID(), user.displayName, detail, clean(user.email, 320).toLowerCase(),
+  ).run();
+  return new Response(workbook, {
+    headers: {
+      "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "content-disposition": `attachment; filename="vedantu-talent-search-results-${exportedAt.slice(0, 10)}.xlsx"`,
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "x-exported-profiles": String(results.candidates.length),
+    },
   });
 }
 
@@ -649,6 +713,7 @@ async function routeApi(request, env, ctx) {
   }
   if (request.method === "GET" && url.pathname === "/api/meta") return getMeta(env, user);
   if (request.method === "POST" && url.pathname === "/api/search/plan") return getSearchPlan(request, env);
+  if (request.method === "POST" && url.pathname === "/api/search/export") return exportSearchResults(request, env, user);
   if (request.method === "GET" && url.pathname === "/api/candidates") return getCandidates(request, env);
   if (request.method === "GET" && url.pathname === "/api/superadmin") return getSuperadminDashboard(request, env, user);
   if (request.method === "GET" && url.pathname === "/api/superadmin/export") return exportSuperadminData(request, env, user);

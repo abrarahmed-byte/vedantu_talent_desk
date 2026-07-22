@@ -197,6 +197,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .results-heading h2, .section-heading h2 { margin: 0; font-size: 17px; }
 .results-heading p, .section-heading p { margin: 4px 0 0; color: var(--muted); font-size: 8px; }
 .freshness-note { color: var(--muted); font-size: 8px; }
+.results-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+.export-results { min-width: 160px; white-space: nowrap; }
+.export-results:disabled { opacity: .55; cursor: wait; transform: none; }
 .candidate-list { display: grid; gap: 9px; }
 .result-pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 18px 0 4px; }
 .result-pager > div { display: flex; align-items: center; gap: 5px; }
@@ -572,6 +575,8 @@ button:disabled { cursor: not-allowed; opacity: .48; transform: none !important;
   .criteria-group { grid-template-columns: 1fr; gap: 4px; }
   .filter-grid { grid-template-columns: 1fr 1fr; }
   .advanced-filter-grid { grid-template-columns: 1fr 1fr; }
+  .results-heading { align-items: stretch; flex-direction: column; }
+  .results-actions { justify-content: space-between; }
   .result-pager { justify-content: space-between; }
   .candidate-card { grid-template-columns: 1fr 62px; gap: 12px; padding: 16px; }
   .identity { grid-column: 1; }

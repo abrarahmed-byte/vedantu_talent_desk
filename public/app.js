@@ -321,24 +321,9 @@ async function runSearch(logSearch = true, page = 1) {
       toast(`AI planner unavailable: ${error.message}`);
     }
   }
-  const [freshnessWeight, freshnessDecayDays] = $("freshnessFilter").value.split(":");
-  const params = new URLSearchParams({
-    q: query,
-    track: state.track,
-    subject: $("subjectFilter").value,
-    language: $("languageFilter").value,
-    experience: $("experienceFilter").value,
-    workMode: $("workModeFilter").value,
-    minViews: $("minViewsFilter").value,
-    minCalls: $("minCallsFilter").value,
-    maxAgeDays: $("maxAgeFilter").value,
-    freshnessWeight,
-    freshnessDecayDays,
-    page: String(page),
-    pageSize: String(state.searchPageSize),
-    includeClaims: $("includeClaims").checked ? "1" : "0",
-  });
-  if (state.searchPlan) params.set("plan", JSON.stringify(state.searchPlan));
+  const params = buildSearchParams(page);
+  const freshnessDecayDays = params.get("freshnessDecayDays");
+  const freshnessWeight = params.get("freshnessWeight");
   $("searchButton").disabled = true;
   $("searchButton").textContent = "Searching profiles…";
   try {
@@ -348,6 +333,7 @@ async function runSearch(logSearch = true, page = 1) {
     state.searchTotal = Number(result.total) || 0;
     state.searchPageSize = Number(result.pageSize) || 40;
     state.searchTotalPages = Number(result.totalPages) || 1;
+    $("exportResults").disabled = !state.searchTotal;
     renderCandidates();
     renderSearchPager();
     const first = state.searchTotal ? (state.searchPage - 1) * state.searchPageSize + 1 : 0;
@@ -372,9 +358,82 @@ async function runSearch(logSearch = true, page = 1) {
   } catch (error) {
     $("candidateList").innerHTML = `<div class="empty-state"><h3>The repository could not be reached</h3><p>${escapeHtml(error.message)}</p></div>`;
     $("resultSummary").textContent = "Database check required";
+    $("exportResults").disabled = true;
   } finally {
     $("searchButton").disabled = false;
     $("searchButton").textContent = "Ask AI to find →";
+  }
+}
+
+function buildSearchParams(page = 1) {
+  const [freshnessWeight, freshnessDecayDays] = $("freshnessFilter").value.split(":");
+  const params = new URLSearchParams({
+    q: $("searchInput").value.trim(),
+    track: state.track,
+    subject: $("subjectFilter").value,
+    language: $("languageFilter").value,
+    experience: $("experienceFilter").value,
+    workMode: $("workModeFilter").value,
+    minViews: $("minViewsFilter").value,
+    minCalls: $("minCallsFilter").value,
+    maxAgeDays: $("maxAgeFilter").value,
+    freshnessWeight,
+    freshnessDecayDays,
+    page: String(page),
+    pageSize: String(state.searchPageSize),
+    includeClaims: $("includeClaims").checked ? "1" : "0",
+  });
+  if (state.searchPlan) params.set("plan", JSON.stringify(state.searchPlan));
+  return params;
+}
+
+async function downloadSearchResults() {
+  const button = $("exportResults");
+  const query = $("searchInput").value.trim();
+  button.disabled = true;
+  const originalLabel = button.textContent;
+  try {
+    if (query && state.searchPlanQuery !== query) await runSearch(false, 1);
+    const params = buildSearchParams(1);
+    params.delete("page");
+    params.delete("pageSize");
+    const estimatedSeconds = Math.max(3, Math.ceil(Math.max(1, state.searchTotal) / 350));
+    let elapsed = 0;
+    button.textContent = `Preparing ${state.searchTotal.toLocaleString("en-IN")} · ETA ~${estimatedSeconds}s`;
+    const progress = window.setInterval(() => {
+      elapsed += 1;
+      button.textContent = `Preparing Excel · ${elapsed}s elapsed`;
+    }, 1000);
+    let response;
+    try {
+      response = await fetch("/api/search/export", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ params: Object.fromEntries(params.entries()) }),
+      });
+    } finally { window.clearInterval(progress); }
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `Export failed (${response.status})`);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("content-disposition") || "";
+    const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "vedantu-talent-search-results.xlsx";
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    toast(`${state.searchTotal.toLocaleString("en-IN")} profiles downloaded · export logged in Activity`);
+    loadMeta().catch(() => {});
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    button.textContent = originalLabel;
+    button.disabled = !state.searchTotal;
   }
 }
 
@@ -608,8 +667,8 @@ function renderMeta() {
 }
 
 function renderActivity() {
-  const actionCopy = { viewed: "viewed profile", resume_opened: "opened resume preview", called: "logged a call", searched: "searched", synced: "synchronized source", access_revoked: "revoked workspace access for" };
-  $("activityList").innerHTML = (state.meta?.activity || []).map((entry) => `<div class="activity-row"><span class="avatar orange">${escapeHtml(initials(entry.actor))}</span><span class="event-icon ${escapeHtml(entry.action)}">${entry.action === "synced" ? "↻" : entry.action === "called" ? "☎" : entry.action === "searched" ? "⌕" : "◉"}</span><div><p><b>${escapeHtml(entry.actor)}</b> ${escapeHtml(actionCopy[entry.action] || entry.action)}${entry.candidate_name ? ` <b>${escapeHtml(entry.candidate_name)}</b>` : ""}</p><small>${escapeHtml(entry.detail)}</small></div><time>${escapeHtml(formatDate(entry.created_at, true))}</time></div>`).join("") || "<div class='empty-state'><h3>No activity yet</h3></div>";
+  const actionCopy = { viewed: "viewed profile", resume_opened: "opened resume preview", called: "logged a call", searched: "searched", search_exported: "downloaded search results", synced: "synchronized source", access_revoked: "revoked workspace access for" };
+  $("activityList").innerHTML = (state.meta?.activity || []).map((entry) => `<div class="activity-row"><span class="avatar orange">${escapeHtml(initials(entry.actor))}</span><span class="event-icon ${escapeHtml(entry.action)}">${entry.action === "synced" ? "↻" : entry.action === "called" ? "☎" : entry.action === "searched" ? "⌕" : entry.action === "search_exported" ? "↓" : "◉"}</span><div><p><b>${escapeHtml(entry.actor)}</b> ${escapeHtml(actionCopy[entry.action] || entry.action)}${entry.candidate_name ? ` <b>${escapeHtml(entry.candidate_name)}</b>` : ""}</p><small>${escapeHtml(entry.detail)}</small></div><time>${escapeHtml(formatDate(entry.created_at, true))}</time></div>`).join("") || "<div class='empty-state'><h3>No activity yet</h3></div>";
 }
 
 function renderSuperadmin() {
@@ -944,6 +1003,7 @@ document.querySelectorAll("[data-track]").forEach((button) => button.onclick = (
   runSearch(false);
 });
 $("searchButton").onclick = () => runSearch(true);
+$("exportResults").onclick = downloadSearchResults;
 $("searchInput").addEventListener("keydown", (event) => { if (event.key === "Enter") runSearch(true); });
 ["subjectFilter", "languageFilter", "experienceFilter", "workModeFilter", "minViewsFilter", "minCallsFilter", "maxAgeFilter", "freshnessFilter"].forEach((id) => $(id).addEventListener("change", () => runSearch(false, 1)));
 $("includeClaims").addEventListener("change", () => runSearch(false));
