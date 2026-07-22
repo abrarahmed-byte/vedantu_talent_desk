@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { connectorRequest, connectorTimeoutMessage, connectorTimeoutMs, mergeStandardized, parseSpreadsheetId, standardizeEmploymentRow, standardizeRow, withIdentityLocks } from "../src/sync.js";
+import { APPLICATION_SYNC_BATCH_SIZE, connectorRequest, connectorTimeoutMessage, connectorTimeoutMs, EMPLOYMENT_SYNC_BATCH_SIZE, mergeStandardized, parseSpreadsheetId, standardizeEmploymentRow, standardizeRow, withIdentityLocks } from "../src/sync.js";
 
 test("parses a Google Spreadsheet URL or id", () => {
   const id = "1AbCdEfGhIjKlMnOpQrStUvWxYz123456";
@@ -105,4 +105,9 @@ test("interactive Sheet previews wait for Apps Script cold starts without promis
   assert.match(connectorTimeoutMessage("preview"), /Select Read columns again/);
   assert.doesNotMatch(connectorTimeoutMessage("preview"), /retry automatically/i);
   assert.match(connectorTimeoutMessage("readRows"), /background sync will retry automatically/i);
+});
+
+test("free-plan source batches stay below the Worker subrequest ceiling", () => {
+  assert.equal(APPLICATION_SYNC_BATCH_SIZE, 2);
+  assert.equal(EMPLOYMENT_SYNC_BATCH_SIZE, 4);
 });

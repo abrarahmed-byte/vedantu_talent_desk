@@ -680,6 +680,9 @@ async function startSourceSync(env, sourceId, user, ctx, fullRefresh = false) {
   const actorEmail = clean(user.email, 320).toLowerCase();
   const source = await env.DB.prepare("SELECT id, label FROM sources WHERE id = ?").bind(sourceId).first();
   if (!source) throw new AuthError("Hiring source not found", 404);
+  if (fullRefresh) {
+    await env.DB.prepare("UPDATE source_connections SET last_cursor=0, updated_at=CURRENT_TIMESTAMP WHERE source_id=?").bind(sourceId).run();
+  }
   const activeJob = await env.DB.prepare(`SELECT id, status,
     CAST(unixepoch('now') - unixepoch(updated_at) AS INTEGER) AS age_seconds
     FROM sync_jobs WHERE source_id = ? AND status IN ('Queued', 'Running') ORDER BY updated_at DESC LIMIT 1`)
@@ -702,9 +705,6 @@ async function startSourceSync(env, sourceId, user, ctx, fullRefresh = false) {
     env.DB.prepare("INSERT INTO activity_logs(id, candidate_id, actor, action, detail, actor_email) VALUES (?, NULL, ?, 'sync_started', ?, ?)")
       .bind(crypto.randomUUID(), actor, `${source.label}: ${fullRefresh ? "full refresh" : "incremental sync"} queued`, actorEmail),
   ]);
-  const work = runSourceSync(env, sourceId, jobId, fullRefresh);
-  if (ctx?.waitUntil) ctx.waitUntil(work);
-  else await work;
   return jobId;
 }
 
@@ -865,15 +865,21 @@ export default {
       return json({ error: error instanceof Error ? error.message : "Unexpected Talent Desk error" }, status);
     }
   },
-  async scheduled(_event, env, ctx) {
-    ctx.waitUntil(processAiEnrichment(env));
-    ctx.waitUntil(backfillApplicationDates(env));
+  async scheduled(event, env, ctx) {
+    if (event.cron === "*/2 * * * *") {
+      ctx.waitUntil(processAiEnrichment(env));
+      return;
+    }
+    if (event.cron === "*/10 * * * *") {
+      ctx.waitUntil(backfillApplicationDates(env));
+      return;
+    }
     const sources = await env.DB.prepare(`SELECT id FROM sources
       WHERE connected=1 AND id IN (SELECT source_id FROM source_connections)
       AND (last_sync <= datetime('now', '-15 minutes') OR EXISTS (
         SELECT 1 FROM sync_jobs WHERE source_id=sources.id AND status IN ('Queued', 'Running')
       ))
-      ORDER BY CASE WHEN status='Syncing' THEN 0 ELSE 1 END, last_sync LIMIT 3`).all();
+      ORDER BY CASE WHEN status='Syncing' THEN 0 ELSE 1 END, last_sync LIMIT 1`).all();
     for (const source of sources.results || []) await startSourceSync(env, source.id, "System", ctx, false);
   },
 };

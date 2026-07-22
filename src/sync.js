@@ -54,7 +54,8 @@ export const EMPLOYMENT_FIELDS = [
   { key: "contractEndDate", label: "Contract end date", required: false, aliases: ["contract end date"] },
 ];
 
-const SYNC_BATCH_SIZE = 50;
+export const APPLICATION_SYNC_BATCH_SIZE = 2;
+export const EMPLOYMENT_SYNC_BATCH_SIZE = 4;
 const SYNC_BATCHES_PER_RUN = 1;
 
 function text(value, max = 1000) {
@@ -617,6 +618,7 @@ export async function runSourceSync(env, sourceId, jobId, fullRefresh = false, r
   const headerRow = Math.max(1, Math.round(Number(mapping._headerRow) || 1));
   const dataStartRow = headerRow + 1;
   const employmentSource = source.kind === "Employment master";
+  const batchSize = employmentSource ? EMPLOYMENT_SYNC_BATCH_SIZE : APPLICATION_SYNC_BATCH_SIZE;
   const effectiveFullRefresh = fullRefresh || (employmentSource && !resumeJob);
   let cursor = effectiveFullRefresh
     ? dataStartRow
@@ -637,7 +639,7 @@ export async function runSourceSync(env, sourceId, jobId, fullRefresh = false, r
       message: resumeJob ? "Resuming the next safe batch" : "Fetching the first batch",
     }, stats);
     for (let batch = 0; batch < SYNC_BATCHES_PER_RUN; batch += 1) {
-      const page = await connectorRequest(env, { action: "readRows", spreadsheetId: source.spreadsheet_id, tabName: source.tab_name, headerRow, startRow: cursor, limit: SYNC_BATCH_SIZE });
+      const page = await connectorRequest(env, { action: "readRows", spreadsheetId: source.spreadsheet_id, tabName: source.tab_name, headerRow, startRow: cursor, limit: batchSize });
       const rows = Array.isArray(page.rows) ? page.rows : [];
       totalRows = Math.max(0, Number(page.totalRows || 0) - headerRow);
       const batchStats = employmentSource
