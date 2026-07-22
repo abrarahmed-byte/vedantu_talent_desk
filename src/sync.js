@@ -54,8 +54,11 @@ export const EMPLOYMENT_FIELDS = [
   { key: "contractEndDate", label: "Contract end date", required: false, aliases: ["contract end date"] },
 ];
 
-export const APPLICATION_SYNC_BATCH_SIZE = 50;
-export const EMPLOYMENT_SYNC_BATCH_SIZE = 50;
+// Each batch gets its own Worker invocation. These conservative sizes keep the
+// current row-by-row deduplication pipeline below Cloudflare Free's subrequest
+// ceiling; the browser and cron runner keep scheduling batches in background.
+export const APPLICATION_SYNC_BATCH_SIZE = 2;
+export const EMPLOYMENT_SYNC_BATCH_SIZE = 4;
 const SYNC_BATCHES_PER_RUN = 1;
 
 function text(value, max = 1000) {

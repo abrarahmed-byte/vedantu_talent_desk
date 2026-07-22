@@ -5,9 +5,6 @@
   "compatibility_date": "2026-05-22",
   "workers_dev": true,
   "keep_vars": true,
-  "limits": {
-    "subrequests": 1000
-  },
   "vars": {
     "AUTH_MODE": "workspace-sso",
     "ALLOW_LOCAL_SOURCE_SYNC": "false",

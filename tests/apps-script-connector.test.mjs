@@ -73,6 +73,6 @@ test("Apps Script manifest enables the Sheets v4 advanced service", () => {
   assert.ok(services.some((service) => service.userSymbol === "Sheets" && service.serviceId === "sheets" && service.version === "v4"));
 });
 
-test("Worker reserves the free-plan allowance for internal database subrequests", () => {
-  assert.equal(workerConfig.limits?.subrequests, 1000);
+test("Worker stays on Cloudflare Free's default subrequest allowance", () => {
+  assert.equal(workerConfig.limits, undefined);
 });

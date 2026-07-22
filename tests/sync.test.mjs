@@ -108,7 +108,7 @@ test("interactive Sheet previews wait for Apps Script cold starts without promis
   assert.match(connectorTimeoutMessage("readRows"), /background sync will retry automatically/i);
 });
 
-test("large source batches use the configured internal-service allowance", () => {
-  assert.equal(APPLICATION_SYNC_BATCH_SIZE, 50);
-  assert.equal(EMPLOYMENT_SYNC_BATCH_SIZE, 50);
+test("source batches stay below the Cloudflare Free subrequest ceiling", () => {
+  assert.equal(APPLICATION_SYNC_BATCH_SIZE, 2);
+  assert.equal(EMPLOYMENT_SYNC_BATCH_SIZE, 4);
 });
