@@ -190,18 +190,25 @@ function renderSearchPlan(plan = state.searchPlan, criteria = state.searchCriter
     ["excluded", "Exclude", "removes profiles"],
   ].map(([importance, label, meaning]) => {
     const items = (criteria || []).filter((item) => item.importance === importance);
-    const chips = items.map((item) => `<button class="criteria-chip ${importance}" data-plan-importance="${importance}" data-plan-field="${escapeHtml(item.field)}" data-plan-value="${escapeHtml(item.value)}" title="Remove this ${importance} criterion">${escapeHtml(item.label)} <span>&times;</span></button>`).join("");
+    const chips = items.map((item) => {
+      const action = item.effect === "rank" ? "Ranks candidates" : "Filters database results";
+      const source = item.database_field ? ` using ${item.database_field}` : "";
+      return `<button class="criteria-chip ${importance}" data-plan-importance="${importance}" data-plan-field="${escapeHtml(item.field)}" data-plan-value="${escapeHtml(item.value)}" title="${escapeHtml(`${action}${source}. Click to remove.`)}">${escapeHtml(item.label)} <span>&times;</span></button>`;
+    }).join("");
     return items.length ? `<div class="criteria-group ${importance}"><b>${label}<small>${meaning}</small></b><div>${chips}</div></div>` : "";
   }).filter(Boolean).join("");
   const modeLabel = mode === "openai" ? "GPT search brief" : mode === "ai" ? "AI search brief" : mode === "fallback" ? "Fast search brief" : "Search brief";
   const modelLabel = plan.planner?.provider === "openai" && plan.planner?.model ? plan.planner.model.replaceAll("-", " ") : "";
-  const verificationLabel = plan.grounded ? `${modelLabel || "Planner"} · grounded` : `${Math.round((Number(plan.confidence) || 0) * 100)}% confidence`;
+  const databaseReady = (criteria || []).every((item) => item.executable !== false);
+  const verificationLabel = plan.grounded && databaseReady ? `${modelLabel || "Planner"} · D1 ready` : `${Math.round((Number(plan.confidence) || 0) * 100)}% confidence`;
   const notices = (Array.isArray(plan.notices) ? plan.notices : [])
     .map((notice) => `<div class="plan-notice"><b>Ignored safely</b><span>${escapeHtml(notice)}</span></div>`).join("");
   const filterCount = (criteria || []).length;
+  const databaseFilters = (criteria || []).filter((item) => item.effect !== "rank").length;
+  const rankingSignals = filterCount - databaseFilters;
   panel.classList.add("show");
   panel.classList.remove("planning");
-  panel.innerHTML = `<div class="search-brief-heading"><div class="brief-identity"><span>&#10022;</span><div><b>${escapeHtml(modeLabel)}</b><p>${escapeHtml(plan.interpretation || "Search criteria prepared")}</p></div></div><div class="brief-actions"><em>${escapeHtml(verificationLabel)}</em><button class="brief-edit" id="editSearchFilters">Fine-tune</button></div></div>${notices}<div class="brief-groups">${groups}</div><div class="brief-footer"><b>${filterCount} active filter${filterCount === 1 ? "" : "s"}</b><small>${warning ? `${escapeHtml(warning)} ` : ""}Click &times; to remove a filter. GPT only uses fields this repository can search.</small></div>`;
+  panel.innerHTML = `<div class="search-brief-heading"><div class="brief-identity"><span>&#10022;</span><div><b>${escapeHtml(modeLabel)}</b><p>${escapeHtml(plan.interpretation || "Search criteria prepared")}</p></div></div><div class="brief-actions"><em>${escapeHtml(verificationLabel)}</em><button class="brief-edit" id="editSearchFilters">Fine-tune</button></div></div>${notices}<div class="brief-groups">${groups}</div><div class="brief-footer"><b><i></i>Database check passed</b><small>${databaseFilters} criteria filter D1${rankingSignals ? ` · ${rankingSignals} improve ranking` : ""}. ${warning ? `${escapeHtml(warning)} ` : ""}Context searches standardized rows and stored résumé text. Click &times; to remove anything.</small></div>`;
   panel.querySelectorAll("[data-plan-field]").forEach((button) => button.onclick = () => removeSearchCriterion(button.dataset.planImportance, button.dataset.planField, button.dataset.planValue));
   $("editSearchFilters").onclick = () => {
     $("fineTune").open = true;

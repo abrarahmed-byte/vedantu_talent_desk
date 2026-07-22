@@ -284,8 +284,7 @@ async function getCandidates(request, env, options = {}) {
   const effectiveMinimumCalls = Math.max(minimumCalls, required.minimum_calls || 0);
   if (effectiveMinimumViews) { conditions.push("c.view_count >= ?"); bindings.push(effectiveMinimumViews); }
   if (effectiveMinimumCalls) { conditions.push("c.call_count >= ?"); bindings.push(effectiveMinimumCalls); }
-  const planMaximumCalls = required.maximum_calls >= 0 ? required.maximum_calls : excluded.maximum_calls;
-  if (planMaximumCalls >= 0) { conditions.push("c.call_count <= ?"); bindings.push(planMaximumCalls); }
+  if (required.maximum_calls >= 0) { conditions.push("c.call_count <= ?"); bindings.push(required.maximum_calls); }
   const ageOptions = [maximumAgeDays, required.maximum_age_days].filter((value) => Number(value) > 0);
   const effectiveMaximumAgeDays = ageOptions.length ? Math.min(...ageOptions) : 0;
   if (effectiveMaximumAgeDays) { conditions.push("c.applied_at >= datetime('now', ?)"); bindings.push(`-${effectiveMaximumAgeDays} days`); }
@@ -293,8 +292,14 @@ async function getCandidates(request, env, options = {}) {
     conditions.push(`c.employment_status IN (${required.employment_statuses.map(() => "?").join(",")})`);
     bindings.push(...required.employment_statuses);
   }
-  if (excluded.track !== "All") { conditions.push("c.track <> ?"); bindings.push(excluded.track); }
-  addNotLikeAny("c.search_text", [...excluded.subjects, ...excluded.exams, ...excluded.languages, ...excluded.keywords]);
+  if (excluded.track !== "All") {
+    conditions.push(`(CASE WHEN ai.status='completed' AND json_extract(ai.canonical_json,
+      '$.profile_classification.recommended_track') IN ('Teacher','Non-teaching')
+      THEN json_extract(ai.canonical_json, '$.profile_classification.recommended_track') ELSE c.track END) <> ?`);
+    bindings.push(excluded.track);
+  }
+  addNotLikeAny("c.search_text", [...excluded.subjects, ...excluded.exams, ...excluded.languages, ...excluded.pincodes, ...excluded.keywords]);
+  addNotLikeAny("c.grades_display", excluded.grades);
   if (excluded.locations.length) {
     const terms = locationSearchTerms(excluded.locations).slice(0, 16);
     for (const term of terms) {
@@ -306,6 +311,14 @@ async function getCandidates(request, env, options = {}) {
     conditions.push(`c.employment_status NOT IN (${excluded.employment_statuses.map(() => "?").join(",")})`);
     bindings.push(...excluded.employment_statuses);
   }
+  if (excluded.minimum_experience_months) { conditions.push("c.experience_months < ?"); bindings.push(excluded.minimum_experience_months); }
+  if (excluded.minimum_views) { conditions.push("c.view_count < ?"); bindings.push(excluded.minimum_views); }
+  if (excluded.minimum_calls) { conditions.push("c.call_count < ?"); bindings.push(excluded.minimum_calls); }
+  if (excluded.maximum_calls >= 0) { conditions.push("c.call_count > ?"); bindings.push(excluded.maximum_calls); }
+  if (excluded.maximum_age_days) { conditions.push("c.applied_at < datetime('now', ?)"); bindings.push(`-${excluded.maximum_age_days} days`); }
+  if (excluded.work_mode === "Online / Remote") conditions.push("(lower(c.work_mode) NOT LIKE '%online%' AND lower(c.work_mode) NOT LIKE '%remote%')");
+  else if (excluded.work_mode === "Offline / On-site") conditions.push("(lower(c.work_mode) NOT LIKE '%offline%' AND lower(c.work_mode) NOT LIKE '%on-site%' AND lower(c.work_mode) NOT LIKE '%onsite%')");
+  else if (excluded.work_mode) { conditions.push("lower(c.work_mode) NOT LIKE ?"); bindings.push(`%${excluded.work_mode.toLowerCase()}%`); }
   const ftsQuery = buildFtsQuery(clientPlan ? searchPlan.semantic_query : query);
   const execute = async (withFts) => {
     const allConditions = [...conditions];

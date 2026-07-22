@@ -218,7 +218,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .criteria-chip.preferred { border-color: #b8dfd1; color: #167255; background: #f1fbf7; }
 .criteria-chip.excluded { border-color: #efc3bd; color: #a4483b; background: #fff6f4; }
 .brief-footer { display: flex; align-items: center; gap: 9px; margin-top: 10px; padding-top: 9px; border-top: 1px solid #e4daf5; }
-.brief-footer b { flex: 0 0 auto; color: #6a4b9c; font-size: 7px; }
+.brief-footer b { flex: 0 0 auto; display: flex; align-items: center; gap: 5px; color: #147458; font-size: 7px; }
+.brief-footer b i { width: 7px; height: 7px; display: block; border-radius: 50%; background: #35c795; box-shadow: 0 0 0 3px rgba(53,199,149,.13); }
 .brief-footer small { color: #816da2; font-size: 6px; line-height: 1.4; }
 .understood.planning { overflow: hidden; }
 .ai-thinking { animation: aiPulse 1.1s ease-in-out infinite; }

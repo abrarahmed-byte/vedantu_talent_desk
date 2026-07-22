@@ -238,19 +238,27 @@ function importanceForMention(query, field, value, fallback = "required") {
 function groundedKeyword(value, query) {
   const queryTokens = new Set(tokenize(query).map(tokenStem));
   const valueTokens = tokenize(value).map(tokenStem);
-  return Boolean(valueTokens.length) && valueTokens.every((token) => queryTokens.has(token));
+  return Boolean(valueTokens.length)
+    && !valueTokens.every((token) => /^\d+$/.test(token))
+    && valueTokens.every((token) => queryTokens.has(token));
 }
 
 function keywordCoveredByStructuredIntent(value, intent) {
   const keywordIntent = parseSearchIntent(value);
   const overlaps = (left, right) => left.some((item) => right.some((candidate) => fieldValueKey("keywords", item) === fieldValueKey("keywords", candidate)));
+  const counters = explicitCounters(value);
   return (keywordIntent.track !== "All" && keywordIntent.track === intent.track)
     || overlaps(keywordIntent.subjects, intent.subjects)
     || overlaps(keywordIntent.exams, intent.exams)
     || overlaps(keywordIntent.languages, intent.languages)
     || overlaps(keywordIntent.locations, intent.locations)
     || overlaps(keywordIntent.pincodes || [], intent.pincodes || [])
-    || overlaps((keywordIntent.grades || []).map(String), (intent.grades || []).map(String));
+    || overlaps((keywordIntent.grades || []).map(String), (intent.grades || []).map(String))
+    || keywordIntent.minimumExperienceMonths > 0
+    || Boolean(explicitWorkMode(value))
+    || explicitEmploymentStatuses(value).length > 0
+    || counters.minimum_views > 0 || counters.minimum_calls > 0 || counters.maximum_calls >= 0
+    || explicitMaximumAgeDays(value) > 0;
 }
 
 function explicitWorkMode(query) {
@@ -466,6 +474,7 @@ export function searchPlanToIntent(plan, query = "") {
   const allWords = [plan?.semantic_query, ...required.keywords, ...preferred.keywords,
     ...required.subjects, ...preferred.subjects, ...required.exams, ...preferred.exams,
     ...required.locations, ...preferred.locations, ...required.languages, ...preferred.languages].join(" ");
+  const structuredNumerics = new Set([...required.pincodes, ...required.grades.map(String)]);
   return {
     track: required.track,
     subjects: required.subjects,
@@ -476,7 +485,7 @@ export function searchPlanToIntent(plan, query = "") {
     grades: required.grades,
     minimumExperienceMonths: required.minimum_experience_months,
     freshestFirst: Boolean(plan?.freshest_first),
-    tokens: expandTokens(tokenize(allWords || query)),
+    tokens: expandTokens(tokenize(allWords || query)).filter((token) => !/^\d+$/.test(token) || structuredNumerics.has(token)),
     keywords: required.keywords,
     examMatchMode: plan?.match_modes?.exams === "any" ? "any" : "all",
     locationMatchMode: plan?.match_modes?.locations === "any" ? "any" : "all",
@@ -492,6 +501,7 @@ function bucketMatches(candidate, bucket, field, value) {
   if (field === "subjects") return includesTerm(`${candidate.subject_display || ""} ${candidate.role || ""} ${searchable}`, value);
   if (field === "exams" || field === "keywords") return includesTerm(searchable, value);
   if (field === "locations") return locationSearchTerms([value]).some((term) => includesTerm(`${candidate.city || ""} ${candidate.state || ""}`, term));
+  if (field === "pincodes") return includesTerm(searchable, value);
   if (field === "languages") return includesTerm(`${candidate.languages_display || ""} ${searchable}`, value);
   if (field === "employment_statuses") return candidate.employment_status === value;
   if (field === "grades") return includesTerm(`${candidate.grades_display || ""} ${searchable}`, String(value));
@@ -507,7 +517,7 @@ export function scoreSearchPlanPreferences(candidate, plan) {
     if (candidate.track === preferred.track) { bonus += 5; reasons.push(preferred.track); }
     else missing.push(preferred.track);
   }
-  const labels = { subjects: "subject", exams: "exam", locations: "location", languages: "language", grades: "grade", keywords: "context", employment_statuses: "employment" };
+  const labels = { subjects: "subject", exams: "exam", locations: "location", pincodes: "pincode", languages: "language", grades: "grade", keywords: "context", employment_statuses: "employment" };
   for (const field of Object.keys(labels)) {
     for (const value of preferred[field] || []) {
       if (bucketMatches(candidate, preferred, field, value)) {
@@ -528,12 +538,48 @@ export function scoreSearchPlanPreferences(candidate, plan) {
     if (Number(candidate.call_count || 0) <= preferred.maximum_calls) { bonus += 4; reasons.push(`at most ${preferred.maximum_calls} calls`); }
     else missing.push(`at most ${preferred.maximum_calls} calls`);
   }
+  if (preferred.minimum_views) {
+    if (Number(candidate.view_count || 0) >= preferred.minimum_views) { bonus += 4; reasons.push(`${preferred.minimum_views}+ views`); }
+    else missing.push(`${preferred.minimum_views}+ views`);
+  }
+  if (preferred.minimum_calls) {
+    if (Number(candidate.call_count || 0) >= preferred.minimum_calls) { bonus += 4; reasons.push(`${preferred.minimum_calls}+ calls`); }
+    else missing.push(`${preferred.minimum_calls}+ calls`);
+  }
   if (preferred.maximum_age_days) {
     const ageDays = Math.max(0, (Date.now() - (Date.parse(candidate.applied_at) || 0)) / 86400000);
     if (ageDays <= preferred.maximum_age_days) { bonus += 5; reasons.push(`applied within ${preferred.maximum_age_days} days`); }
     else missing.push(`applied within ${preferred.maximum_age_days} days`);
   }
   return { bonus: Math.min(24, bonus), reasons: reasons.slice(0, 5), missing: missing.slice(0, 5) };
+}
+
+const CRITERION_DATABASE_FIELDS = {
+  track: "profile type",
+  subjects: "standardized row + résumé evidence",
+  exams: "standardized row + résumé evidence",
+  locations: "city/state",
+  pincodes: "standardized row",
+  languages: "standardized row + résumé text",
+  grades: "standardized row + résumé text",
+  keywords: "row + résumé text",
+  employment_statuses: "employment history",
+  minimum_experience_months: "experience months",
+  work_mode: "work mode",
+  minimum_views: "view log",
+  minimum_calls: "call log",
+  maximum_calls: "call log",
+  maximum_age_days: "latest application date",
+  freshest_first: "latest application date",
+};
+
+function executableCriterion(importance, field, value, label) {
+  return {
+    importance, field, value: String(value), label,
+    executable: true,
+    effect: importance === "preferred" ? "rank" : "filter",
+    database_field: CRITERION_DATABASE_FIELDS[field] || "candidate repository",
+  };
 }
 
 export function describeSearchPlan(plan) {
@@ -545,22 +591,22 @@ export function describeSearchPlan(plan) {
   };
   for (const importance of ["required", "preferred", "excluded"]) {
     const bucket = safe[importance];
-    if (bucket.track !== "All") chips.push({ importance, field: "track", value: bucket.track, label: bucket.track });
+    if (bucket.track !== "All") chips.push(executableCriterion(importance, "track", bucket.track, bucket.track));
     for (const [field, label] of Object.entries(labels)) {
       for (const value of bucket[field]) {
         const fieldLabel = field === "exams" && safe.match_modes.exams === "any"
           ? "Exam option"
           : field === "locations" && safe.match_modes.locations === "any" ? "Location option" : label;
-        chips.push({ importance, field, value: String(value), label: `${fieldLabel}: ${value}` });
+        chips.push(executableCriterion(importance, field, value, `${fieldLabel}: ${value}`));
       }
     }
-    if (bucket.minimum_experience_months) chips.push({ importance, field: "minimum_experience_months", value: String(bucket.minimum_experience_months), label: `${bucket.minimum_experience_months}+ months experience` });
-    if (bucket.work_mode) chips.push({ importance, field: "work_mode", value: bucket.work_mode, label: bucket.work_mode });
-    if (bucket.minimum_views) chips.push({ importance, field: "minimum_views", value: String(bucket.minimum_views), label: `${bucket.minimum_views}+ views` });
-    if (bucket.minimum_calls) chips.push({ importance, field: "minimum_calls", value: String(bucket.minimum_calls), label: `${bucket.minimum_calls}+ calls` });
-    if (bucket.maximum_calls >= 0) chips.push({ importance, field: "maximum_calls", value: String(bucket.maximum_calls), label: bucket.maximum_calls === 0 ? "Not contacted" : `At most ${bucket.maximum_calls} calls` });
-    if (bucket.maximum_age_days) chips.push({ importance, field: "maximum_age_days", value: String(bucket.maximum_age_days), label: `Applied within ${bucket.maximum_age_days} days` });
+    if (bucket.minimum_experience_months) chips.push(executableCriterion(importance, "minimum_experience_months", bucket.minimum_experience_months, `${bucket.minimum_experience_months}+ months experience`));
+    if (bucket.work_mode) chips.push(executableCriterion(importance, "work_mode", bucket.work_mode, bucket.work_mode));
+    if (bucket.minimum_views) chips.push(executableCriterion(importance, "minimum_views", bucket.minimum_views, `${bucket.minimum_views}+ views`));
+    if (bucket.minimum_calls) chips.push(executableCriterion(importance, "minimum_calls", bucket.minimum_calls, `${bucket.minimum_calls}+ calls`));
+    if (bucket.maximum_calls >= 0) chips.push(executableCriterion(importance, "maximum_calls", bucket.maximum_calls, bucket.maximum_calls === 0 ? "Not contacted" : `At most ${bucket.maximum_calls} calls`));
+    if (bucket.maximum_age_days) chips.push(executableCriterion(importance, "maximum_age_days", bucket.maximum_age_days, `Applied within ${bucket.maximum_age_days} days`));
   }
-  if (safe.freshest_first) chips.push({ importance: "preferred", field: "freshest_first", value: "true", label: "Freshest first" });
+  if (safe.freshest_first) chips.push(executableCriterion("preferred", "freshest_first", "true", "Freshest first"));
   return chips;
 }

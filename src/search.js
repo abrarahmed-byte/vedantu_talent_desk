@@ -232,7 +232,7 @@ export function parseSearchIntent(query) {
     grades: unique(grades),
     minimumExperienceMonths: experienceMatch ? Number(experienceMatch[1]) * 12 : 0,
     freshestFirst: /fresh|latest|newest|recent/.test(normalized),
-    tokens: expandTokens(tokenize(query)),
+    tokens: expandTokens(tokenize(query)).filter((token) => !/^\d+$/.test(token) || pincodes.includes(token) || grades.map(String).includes(token)),
   };
   const knownTokens = new Set([
     ...tokenize(intent.track),
@@ -245,7 +245,7 @@ export function parseSearchIntent(query) {
     "teacher", "teaching", "faculty", "educator", "jee", "iit", "neet", "olympiad", "ntse", "foundation",
     "grade", "grades", "class", "classes", "experience", "experienced", "year", "years", "month", "months",
   ]);
-  intent.keywords = unique(tokenize(query).filter((token) => !knownTokens.has(token)));
+  intent.keywords = unique(tokenize(query).filter((token) => !knownTokens.has(token) && !/^\d+$/.test(token)));
   return intent;
 }
 

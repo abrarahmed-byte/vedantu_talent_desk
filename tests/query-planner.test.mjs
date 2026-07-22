@@ -84,7 +84,7 @@ test("preferred criteria increase score without becoming mandatory filters", () 
     interpretation: "Physics required and Hindi preferred",
     semantic_query: "physics teacher hindi",
     required: bucket({ track: "Teacher", subjects: ["Physics"] }),
-    preferred: bucket({ languages: ["Hindi"], minimum_experience_months: 48 }),
+    preferred: bucket({ languages: ["Hindi"], pincodes: ["560001"], minimum_experience_months: 48, minimum_views: 3, minimum_calls: 1 }),
     excluded: bucket(),
     freshest_first: false,
     confidence: 0.9,
@@ -92,10 +92,13 @@ test("preferred criteria increase score without becoming mandatory filters", () 
   const intent = searchPlanToIntent(plan, "Physics teacher, preferably Hindi");
   assert.deepEqual(intent.subjects, ["Physics"]);
   assert.deepEqual(intent.languages, []);
-  const fit = scoreSearchPlanPreferences({ languages_display: "English, Hindi", experience_months: 60 }, plan);
+  const fit = scoreSearchPlanPreferences({ languages_display: "English, Hindi", search_text: "Bengaluru 560001", experience_months: 60, view_count: 5, call_count: 2 }, plan);
   assert.ok(fit.bonus >= 11);
   assert.ok(fit.reasons.some((reason) => reason.includes("Hindi")));
-  assert.ok(describeSearchPlan(plan).some((criterion) => criterion.importance === "preferred"));
+  const criteria = describeSearchPlan(plan);
+  assert.ok(criteria.some((criterion) => criterion.importance === "preferred"));
+  assert.ok(criteria.every((criterion) => criterion.executable === true));
+  assert.ok(criteria.filter((criterion) => criterion.importance === "preferred").every((criterion) => criterion.effect === "rank"));
 });
 
 test("AI hallucinations are removed from a Cuemath early-learner search", async () => {
@@ -208,4 +211,24 @@ test("GPT converts applied in the past seven days into a real freshness filter",
   assert.ok(describeSearchPlan(plan).some((item) => item.label === "Applied within 7 days"));
   assert.match(plan.interpretation, /Applied within 7 days/);
   assert.doesNotMatch(plan.interpretation, /Context|\bbut\b|No exclusions/i);
+});
+
+test("the AP TS thirty-day brief contains only executable database criteria", async () => {
+  const raw = {
+    interpretation: "JEE Physics teachers in AP or Telangana applied in the past 30 days",
+    semantic_query: "JEE Physics teacher AP TS applied in the past 30 days",
+    required: bucket({
+      track: "Teacher", subjects: ["Physics"], exams: ["JEE"],
+      locations: ["Andhra Pradesh", "Telangana"], keywords: ["applied in the past 30 days"], maximum_age_days: 30,
+    }),
+    preferred: bucket(), excluded: bucket(), freshest_first: false, confidence: 0.98,
+  };
+  const query = "JEE Physics teacher in AP/TS region who applied in the past 30 days";
+  const plan = await createAiSearchPlan(openAiEnv(raw), query);
+  const criteria = describeSearchPlan(plan);
+  assert.deepEqual(plan.required.keywords, []);
+  assert.equal(plan.required.maximum_age_days, 30);
+  assert.equal(criteria.filter((item) => item.field === "maximum_age_days").length, 1);
+  assert.ok(criteria.every((item) => item.executable && item.effect === "filter" && item.database_field));
+  assert.doesNotMatch(plan.interpretation, /Context: applied/i);
 });
