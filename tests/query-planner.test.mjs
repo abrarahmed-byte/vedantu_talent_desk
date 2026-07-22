@@ -4,6 +4,7 @@ import {
   createAiSearchPlan,
   describeSearchPlan,
   fallbackSearchPlan,
+  parseClientSearchPlan,
   sanitizeSearchPlan,
   scoreSearchPlanPreferences,
   searchPlanToIntent,
@@ -82,4 +83,38 @@ test("preferred criteria increase score without becoming mandatory filters", () 
   assert.ok(fit.bonus >= 11);
   assert.ok(fit.reasons.some((reason) => reason.includes("Hindi")));
   assert.ok(describeSearchPlan(plan).some((criterion) => criterion.importance === "preferred"));
+});
+
+test("AI hallucinations are removed from a Cuemath early-learner search", async () => {
+  const hallucinated = {
+    interpretation: "Teacher, Maths, JEE, Telangana, English and active employees.",
+    semantic_query: "JEE Maths teacher Telangana English",
+    required: bucket({ track: "Teacher", subjects: ["Maths"], exams: ["JEE"], locations: ["Telangana"], languages: ["English"], grades: [11, 12], keywords: ["Cuemath"], employment_statuses: ["Active employee"], work_mode: "Offline / On-site", maximum_calls: 0 }),
+    preferred: bucket({ track: "Teacher", subjects: ["Maths"], exams: ["JEE"], locations: ["Telangana"], languages: ["English"], grades: [11, 12], keywords: ["Cuemath"], employment_statuses: ["Active employee"], work_mode: "Offline / On-site" }),
+    excluded: bucket({ track: "Teacher", subjects: ["Maths"], locations: ["Telangana"], keywords: ["Cuemath"], employment_statuses: ["No employment match"], work_mode: "Offline / On-site", maximum_calls: 0 }),
+    freshest_first: true,
+    confidence: 0.8,
+  };
+  const env = { AI: { run: async () => ({ response: JSON.stringify(hallucinated) }) } };
+  const plan = await createAiSearchPlan(env, "Early learner teachers who have worked in Cuemath");
+  assert.equal(plan.required.track, "Teacher");
+  assert.deepEqual(plan.required.keywords, ["Cuemath", "early learner"]);
+  assert.deepEqual(plan.required.subjects, []);
+  assert.deepEqual(plan.required.exams, []);
+  assert.deepEqual(plan.required.locations, []);
+  assert.deepEqual(plan.required.languages, []);
+  assert.deepEqual(plan.required.grades, []);
+  assert.deepEqual(plan.required.employment_statuses, []);
+  assert.equal(plan.required.work_mode, "");
+  assert.equal(plan.required.maximum_calls, -1);
+  assert.deepEqual(describeSearchPlan(plan).filter((item) => item.importance === "preferred"), []);
+  assert.deepEqual(describeSearchPlan(plan).filter((item) => item.importance === "excluded"), []);
+  assert.equal(plan.freshest_first, false);
+  assert.doesNotMatch(plan.interpretation, /JEE|Telangana|English|active employee/i);
+  assert.equal(plan.semantic_query, "Early learner teachers who have worked in Cuemath");
+  assert.equal(plan.grounded, true);
+
+  plan.required.keywords = plan.required.keywords.filter((keyword) => keyword !== "early learner");
+  const afterRecruiterEdit = parseClientSearchPlan(JSON.stringify(plan), "Early learner teachers who have worked in Cuemath");
+  assert.deepEqual(afterRecruiterEdit.required.keywords, ["Cuemath"]);
 });

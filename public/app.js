@@ -185,18 +185,19 @@ function renderSearchPlan(plan = state.searchPlan, criteria = state.searchCriter
     return;
   }
   const groups = [
-    ["required", "Required"],
-    ["preferred", "Preferred"],
-    ["excluded", "Excluded"],
-  ].map(([importance, label]) => {
+    ["required", "Required", "must match"],
+    ["preferred", "Preferred", "ranking boost only"],
+    ["excluded", "Excluded", "must not match"],
+  ].map(([importance, label, meaning]) => {
     const items = (criteria || []).filter((item) => item.importance === importance);
-    if (!items.length) return "";
-    return `<div class="criteria-group"><b>${label}</b><div>${items.map((item) => `<button class="criteria-chip ${importance}" data-plan-importance="${importance}" data-plan-field="${escapeHtml(item.field)}" data-plan-value="${escapeHtml(item.value)}" title="Remove this criterion">${escapeHtml(item.label)} <span>&times;</span></button>`).join("")}</div></div>`;
+    const chips = items.map((item) => `<button class="criteria-chip ${importance}" data-plan-importance="${importance}" data-plan-field="${escapeHtml(item.field)}" data-plan-value="${escapeHtml(item.value)}" title="Remove this ${importance} criterion">${escapeHtml(item.label)} <span>&times;</span></button>`).join("");
+    return `<div class="criteria-group ${importance}"><b>${label}<small>${meaning}</small></b><div>${chips || `<span class="criteria-none">None</span>`}</div></div>`;
   }).join("");
   const modeLabel = mode === "ai" ? "AI interpreted" : mode === "fallback" ? "Fast fallback" : "Search plan";
+  const verificationLabel = plan.grounded ? "Checked against your words" : `${Math.round((Number(plan.confidence) || 0) * 100)}% confidence`;
   panel.classList.add("show");
   panel.classList.remove("planning");
-  panel.innerHTML = `<div class="understood-heading"><span>&#10022;</span><div><b>${escapeHtml(modeLabel)}</b><p>${escapeHtml(plan.interpretation || "Search criteria prepared")}</p></div><em>${Math.round((Number(plan.confidence) || 0) * 100)}% confidence</em></div>${groups}<small>${warning ? `${escapeHtml(warning)} ` : ""}Click any criterion to remove it, then the results update without asking AI again.</small>`;
+  panel.innerHTML = `<div class="understood-heading"><span>&#10022;</span><div><b>${escapeHtml(modeLabel)}</b><p>${escapeHtml(plan.interpretation || "Search criteria prepared")}</p></div><em>${escapeHtml(verificationLabel)}</em></div>${groups}<small>${warning ? `${escapeHtml(warning)} ` : ""}Required filters the list. Preferred changes ranking only. Excluded removes profiles and is used only when your request explicitly says not, exclude, without or similar.</small>`;
   panel.querySelectorAll("[data-plan-field]").forEach((button) => button.onclick = () => removeSearchCriterion(button.dataset.planImportance, button.dataset.planField, button.dataset.planValue));
 }
 

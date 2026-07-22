@@ -22,6 +22,13 @@ test("employer names remain mandatory beside structured teaching criteria", () =
   assert.deepEqual(intent.keywords, ["unacademy"]);
 });
 
+test("working for a named company is not mistaken for a location", () => {
+  const intent = parseSearchIntent("Early learner teachers who have worked in Cuemath");
+  assert.equal(intent.track, "Teacher");
+  assert.deepEqual(intent.locations, []);
+  assert.deepEqual(intent.keywords, ["early", "learner", "cuemath"]);
+});
+
 test("intent parser understands track, location, grades, language and experience", () => {
   const intent = parseSearchIntent("Physics teacher in Gurgaon for grades 9 to 12, Hindi, 4 years experience");
   assert.equal(intent.track, "Teacher");

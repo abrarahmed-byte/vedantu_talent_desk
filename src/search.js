@@ -2,7 +2,9 @@ const STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "can", "candidate", "candidates", "for", "from",
   "fresh", "first", "in", "is", "latest", "looking", "me", "month", "months", "newest", "of", "on",
   "or", "profile", "profiles", "recent", "show", "that", "the", "they", "to", "want", "who", "with",
-  "year", "years",
+  "year", "years", "have", "has", "had", "work", "worked", "working", "prefer", "preferred", "preferably",
+  "ideally", "bonus", "must", "required", "exclude", "excluding", "without", "not", "no", "previous",
+  "call", "calls", "called", "contact", "contacted", "view", "views", "teachers",
 ]);
 
 const SYNONYMS = {
@@ -145,7 +147,7 @@ function contextualLocations(query) {
   const pattern = /\b(?:based\s+in|located\s+in|location\s*(?:is|:)?|city\s*(?:is|:)?|state\s*(?:is|:)?|from|in)\s+([a-z][a-z .'-]{1,70})/g;
   for (const match of normalized.matchAll(pattern)) {
     const prefix = normalized.slice(Math.max(0, match.index - 24), match.index);
-    if (/\b(?:experience|experienced|expert|speciali[sz]ed|proficient|skilled)\s*$/.test(prefix)) continue;
+    if (/\b(?:experience|experienced|expert|speciali[sz]ed|proficient|skilled|worked|employed)\s*$/.test(prefix)) continue;
     const phrase = match[1].split(/[,;]|\b(?:with|who|that|for|having|and|or|teaching|speaks?|grade|grades|class|classes|board|experience|years?|months?|available|open)\b/)[0].trim();
     if (!phrase || phrase.length > 45 || LOCATION_NOISE.test(phrase)) continue;
     const group = locationGroup(phrase);

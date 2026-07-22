@@ -46,14 +46,19 @@ const SYSTEM_PROMPT = `You are the search planner for an internal recruitment re
 
 Rules:
 - Separate explicit non-negotiable requirements from preferences and exclusions.
-- Words such as must, only, required and needs mean required. Words such as prefer, ideally and bonus mean preferred. Words such as exclude, without, not, no previous calls and do not show mean excluded.
+- Words such as must, only, required and needs mean required. Words such as prefer, ideally and bonus mean preferred. Words such as exclude, without, not and do not show mean excluded. "No previous calls" is the special required constraint maximum_calls=0, not an Excluded chip.
+- Every non-empty field must be supported by words in the current user message. Start with every field empty; never reuse details from an earlier request, an example, or a common candidate profile.
+- A criterion may appear in exactly one bucket. Never repeat the same track, subject, exam, location, language, grade, keyword, employment state or work mode across Required, Preferred and Excluded.
+- Excluded must stay completely empty unless the current message explicitly says exclude, excluding, without, except, avoid, not, no, do not show or an equivalent negative instruction.
 - A central noun phrase such as "JEE Physics teacher in Telangana" normally makes Teacher, Physics, JEE and Telangana required unless the user weakens it.
 - Translate equivalent concepts into common recruitment terms. Examples: engineering entrance coaching -> JEE; senior secondary -> grades 11 and 12; classroom teaching -> Offline / On-site; online tutor -> Online / Remote.
 - Put employer names, job titles, skills and contextual concepts that do not fit a structured field in keywords. Keep useful multi-word phrases together.
+- "Worked at/in [company]" means that company is a required keyword. It does not mean Active employee, Former employee or No employment match; those statuses refer only to the Vedantu employment master.
 - Set maximum_calls to 0 when the recruiter asks for uncontacted or never-called profiles. Put this constraint in required even if the user describes previously contacted profiles as an exclusion. Otherwise use -1.
 - Use maximum_age_days only when the recruiter gives an actual time window. "Recent" alone means freshest_first=true, not an invented cutoff.
 - Never add facts the recruiter did not request. Never infer or search protected or sensitive traits such as gender, religion, caste, age, disability, health, marital status or ethnicity.
 - The semantic_query should be a compact, search-oriented restatement using useful equivalents, not a copy of filler words.
+- Example: "Early learner teachers who have worked in Cuemath" requires Teacher plus the keywords "early learner" and "Cuemath". Subjects, exams, locations, languages, grades, employment statuses, work mode, contact status, Preferred and Excluded must all remain empty.
 - Return only the requested JSON.`;
 
 function text(value, max = 160) {
@@ -106,6 +111,8 @@ export function sanitizeSearchPlan(value = {}, fallbackQuery = "") {
     excluded: sanitizeBucket(value.excluded),
     freshest_first: Boolean(value.freshest_first),
     confidence: Math.max(0, Math.min(1, Number(value.confidence) || 0)),
+    grounded: Boolean(value.grounded),
+    guardrails_applied: Boolean(value.guardrails_applied),
   };
 }
 
@@ -129,7 +136,242 @@ export function fallbackSearchPlan(query) {
     excluded: emptyBucket(),
     freshest_first: intent.freshestFirst,
     confidence: 0,
+    grounded: true,
+    guardrails_applied: true,
   };
+}
+
+function normalized(value) {
+  return String(value || "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function tokenStem(value) {
+  const token = normalized(value);
+  if (token.length > 4 && token.endsWith("ies")) return `${token.slice(0, -3)}y`;
+  if (token.length > 4 && token.endsWith("s")) return token.slice(0, -1);
+  return token;
+}
+
+function fieldValueKey(field, value) {
+  let result = normalized(value);
+  if (field === "subjects") result = result.replace(/\bmaths?\b/g, "mathematics");
+  if (field === "locations") {
+    const terms = locationSearchTerms([value]);
+    result = normalized(terms[0] || value);
+  }
+  return result;
+}
+
+function allowedFieldValue(field, value, allowed) {
+  const key = fieldValueKey(field, value);
+  return (allowed || []).find((item) => fieldValueKey(field, item) === key) || null;
+}
+
+function mentionVariants(field, value) {
+  if (field === "locations") return locationSearchTerms([value]);
+  if (field === "subjects" && fieldValueKey(field, value) === "mathematics") return ["mathematics", "maths", "math"];
+  if (field === "work_mode") {
+    if (value === "Online / Remote") return ["online", "remote", "work from home", "wfh"];
+    if (value === "Offline / On-site") return ["offline", "on site", "onsite", "classroom"];
+  }
+  return [String(value || "")];
+}
+
+function importanceForMention(query, field, value, fallback = "required") {
+  const haystack = normalized(query);
+  const variants = mentionVariants(field, value).map(normalized).filter(Boolean);
+  let index = -1;
+  let length = 0;
+  for (const variant of variants) {
+    index = haystack.indexOf(variant);
+    if (index >= 0) { length = variant.length; break; }
+  }
+  if (index < 0) return fallback;
+  const before = haystack.slice(Math.max(0, index - 45), index).trim();
+  const after = haystack.slice(index + length, Math.min(haystack.length, index + length + 24)).trim();
+  const exclusionBefore = /\b(?:exclude|excluding|without|except|avoid|not|no|do not show|dont show)(?:\s+\w+){0,3}\s*$/.test(before);
+  const exclusionAfter = /^(?:is\s+)?(?:excluded|not allowed|must not match)\b/.test(after);
+  if (exclusionBefore || exclusionAfter) return "excluded";
+  const preferenceBefore = /\b(?:prefer|preferred|preferably|ideally|bonus|nice to have|good to have)(?:\s+\w+){0,3}\s*$/.test(before);
+  const preferenceAfter = /^(?:is\s+)?(?:preferred|preferable|ideal|a bonus|nice to have)\b/.test(after);
+  if (preferenceBefore || preferenceAfter) return "preferred";
+  return "required";
+}
+
+function groundedKeyword(value, query) {
+  const queryTokens = new Set(tokenize(query).map(tokenStem));
+  const valueTokens = tokenize(value).map(tokenStem);
+  return Boolean(valueTokens.length) && valueTokens.every((token) => queryTokens.has(token));
+}
+
+function explicitWorkMode(query) {
+  const value = normalized(query);
+  if (/\bhybrid\b/.test(value)) return "Hybrid";
+  if (/\b(?:online|remote|work from home|wfh)\b/.test(value)) return "Online / Remote";
+  if (/\b(?:offline|on site|onsite|classroom)\b/.test(value)) return "Offline / On-site";
+  return "";
+}
+
+function explicitEmploymentStatuses(query) {
+  const value = normalized(query);
+  const statuses = [];
+  if (/\b(?:active|current)\s+(?:vedantu\s+)?employee\b|\bcurrently employed (?:at|by) vedantu\b/.test(value)) statuses.push("Active employee");
+  if (/\b(?:former|ex|previous)\s+(?:vedantu\s+)?employee\b|\bpreviously (?:worked|employed) (?:at|by) vedantu\b/.test(value)) statuses.push("Former employee");
+  if (/\b(?:never|not)\s+(?:worked|employed) (?:at|by) vedantu\b|\bno employment match\b/.test(value)) statuses.push("No employment match");
+  return statuses;
+}
+
+function explicitCounters(query) {
+  const value = normalized(query);
+  const views = value.match(/\b(?:at least|minimum|min|more than)?\s*(\d+)\+?\s+views?\b/);
+  const calls = value.match(/\b(?:at least|minimum|min|more than)?\s*(\d+)\+?\s+calls?\b/);
+  const maximumCalls = value.match(/\b(?:at most|maximum|max|no more than)\s*(\d+)\s+calls?\b/);
+  const uncontacted = /\b(?:not contacted|never contacted|never called|no previous calls?|zero calls?|0 calls?)\b/.test(value);
+  return {
+    minimum_views: views ? integer(views[1], 0, 100000) : 0,
+    minimum_calls: calls && !maximumCalls ? integer(calls[1], 0, 100000) : 0,
+    maximum_calls: uncontacted ? 0 : maximumCalls ? integer(maximumCalls[1], 0, 100000) : -1,
+  };
+}
+
+function explicitMaximumAgeDays(query) {
+  const value = normalized(query);
+  const match = value.match(/\b(?:last|past|within)\s+(\d+)\s+(days?|weeks?|months?|years?)\b/);
+  if (!match) return 0;
+  const amount = integer(match[1], 0, 3650);
+  const unit = match[2];
+  const multiplier = unit.startsWith("week") ? 7 : unit.startsWith("month") ? 30 : unit.startsWith("year") ? 365 : 1;
+  return Math.min(3650, amount * multiplier);
+}
+
+function assignArrayValue(output, occurrences, query, field, value, fallbackImportance = "required") {
+  const importance = importanceForMention(query, field, value, fallbackImportance);
+  if (!output[importance][field].some((item) => fieldValueKey(field, item) === fieldValueKey(field, value))) {
+    output[importance][field].push(value);
+  }
+  return importance;
+}
+
+function planInterpretation(plan, query) {
+  const chips = describeSearchPlan(plan);
+  const labels = (importance) => chips.filter((chip) => chip.importance === importance).map((chip) => chip.label);
+  const required = labels("required");
+  const preferred = labels("preferred");
+  const excluded = labels("excluded");
+  const parts = [];
+  if (required.length) parts.push(`Must match: ${required.join(", ")}`);
+  if (preferred.length) parts.push(`Ranking preference: ${preferred.join(", ")}`);
+  parts.push(excluded.length ? `Must exclude: ${excluded.join(", ")}` : "No exclusions");
+  return text(parts.join(". ") || `Search for ${query}`, 360);
+}
+
+export function groundSearchPlan(value = {}, query = "", options = {}) {
+  const safe = sanitizeSearchPlan(value, query);
+  const parsed = parseSearchIntent(query);
+  const addMissing = options.addMissing !== false;
+  const output = {
+    interpretation: "",
+    semantic_query: text(query, 360),
+    required: emptyBucket(), preferred: emptyBucket(), excluded: emptyBucket(),
+    freshest_first: /\b(?:fresh|latest|newest|recent)\b/i.test(query) && (addMissing || safe.freshest_first),
+    confidence: safe.confidence,
+    grounded: true,
+    guardrails_applied: true,
+  };
+  const allowed = {
+    subjects: parsed.subjects, exams: parsed.exams, locations: parsed.locations, pincodes: parsed.pincodes,
+    languages: parsed.languages, grades: parsed.grades,
+  };
+  for (const field of ["subjects", "exams", "locations", "pincodes", "languages", "grades"]) {
+    const seen = new Map();
+    for (const importance of ["required", "preferred", "excluded"]) {
+      for (const raw of safe[importance][field]) {
+        const canonical = allowedFieldValue(field, raw, allowed[field]);
+        if (!canonical) continue;
+        const key = fieldValueKey(field, canonical);
+        if (!seen.has(key)) seen.set(key, { value: canonical, occurrences: [] });
+        seen.get(key).occurrences.push(importance);
+      }
+    }
+    for (const { value: item, occurrences } of seen.values()) {
+      assignArrayValue(output, occurrences, query, field, item, occurrences.includes("required") ? "required" : occurrences[0]);
+    }
+    if (addMissing) {
+      for (const item of allowed[field]) {
+        const exists = ["required", "preferred", "excluded"].some((importance) => output[importance][field].some((value) => fieldValueKey(field, value) === fieldValueKey(field, item)));
+        if (!exists) assignArrayValue(output, [], query, field, item);
+      }
+    }
+  }
+  if (parsed.track !== "All") {
+    const occurrences = ["required", "preferred", "excluded"].filter((importance) => safe[importance].track === parsed.track);
+    if (addMissing || occurrences.length) {
+      const importance = importanceForMention(query, "track", parsed.track, occurrences.includes("required") ? "required" : occurrences[0] || "required");
+      output[importance].track = parsed.track;
+    }
+  }
+  const keywordOccurrences = new Map();
+  for (const importance of ["required", "preferred", "excluded"]) {
+    for (const keyword of safe[importance].keywords) {
+      if (!groundedKeyword(keyword, query)) continue;
+      const key = normalized(keyword);
+      if (!keywordOccurrences.has(key)) keywordOccurrences.set(key, { value: keyword, occurrences: [] });
+      keywordOccurrences.get(key).occurrences.push(importance);
+    }
+  }
+  for (const { value: keyword, occurrences } of keywordOccurrences.values()) {
+    assignArrayValue(output, occurrences, query, "keywords", keyword, occurrences.includes("required") ? "required" : occurrences[0]);
+  }
+  const contextPhrases = [];
+  if (/\bearly\s+learners?\b/i.test(query)) contextPhrases.push("early learner");
+  for (const phrase of addMissing ? contextPhrases : []) {
+    const phraseTokens = new Set(tokenize(phrase).map(tokenStem));
+    const alreadyPresent = ["required", "preferred", "excluded"].some((importance) => output[importance].keywords.some((keyword) => normalized(keyword) === normalized(phrase)));
+    if (alreadyPresent) continue;
+    for (const importance of ["required", "preferred", "excluded"]) {
+      output[importance].keywords = output[importance].keywords.filter((keyword) => {
+        const tokens = tokenize(keyword).map(tokenStem);
+        return tokens.length !== 1 || !phraseTokens.has(tokens[0]);
+      });
+    }
+    output[importanceForMention(query, "keywords", phrase)].keywords.push(phrase);
+  }
+  const keywordTokens = new Set(["required", "preferred", "excluded"].flatMap((importance) => output[importance].keywords.flatMap((value) => tokenize(value).map(tokenStem))));
+  if (addMissing) {
+    for (const keyword of parsed.keywords || []) {
+      if (keywordTokens.has(tokenStem(keyword))) continue;
+      const importance = importanceForMention(query, "keywords", keyword);
+      output[importance].keywords.push(keyword);
+      keywordTokens.add(tokenStem(keyword));
+    }
+  }
+  const hasExperience = ["required", "preferred", "excluded"].some((importance) => safe[importance].minimum_experience_months > 0);
+  if (parsed.minimumExperienceMonths && (addMissing || hasExperience)) {
+    const importance = importanceForMention(query, "minimum_experience_months", "experience");
+    output[importance].minimum_experience_months = parsed.minimumExperienceMonths;
+  }
+  const workMode = explicitWorkMode(query);
+  const hasWorkMode = ["required", "preferred", "excluded"].some((importance) => safe[importance].work_mode === workMode);
+  if (workMode && (addMissing || hasWorkMode)) output[importanceForMention(query, "work_mode", workMode)].work_mode = workMode;
+  for (const status of explicitEmploymentStatuses(query)) {
+    const hasStatus = ["required", "preferred", "excluded"].some((importance) => safe[importance].employment_statuses.includes(status));
+    if (addMissing || hasStatus) assignArrayValue(output, [], query, "employment_statuses", status);
+  }
+  const counters = explicitCounters(query);
+  const hasMinimumViews = ["required", "preferred", "excluded"].some((importance) => safe[importance].minimum_views > 0);
+  const hasMinimumCalls = ["required", "preferred", "excluded"].some((importance) => safe[importance].minimum_calls > 0);
+  const hasMaximumCalls = ["required", "preferred", "excluded"].some((importance) => safe[importance].maximum_calls >= 0);
+  if (counters.minimum_views && (addMissing || hasMinimumViews)) output[importanceForMention(query, "minimum_views", "views")].minimum_views = counters.minimum_views;
+  if (counters.minimum_calls && (addMissing || hasMinimumCalls)) output[importanceForMention(query, "minimum_calls", "calls")].minimum_calls = counters.minimum_calls;
+  if (counters.maximum_calls >= 0 && (addMissing || hasMaximumCalls)) output.required.maximum_calls = counters.maximum_calls;
+  const maximumAgeDays = explicitMaximumAgeDays(query);
+  const hasMaximumAge = ["required", "preferred", "excluded"].some((importance) => safe[importance].maximum_age_days > 0);
+  if (maximumAgeDays && (addMissing || hasMaximumAge)) output[importanceForMention(query, "maximum_age_days", "last")].maximum_age_days = maximumAgeDays;
+  output.interpretation = planInterpretation(output, query);
+  const beforeCount = describeSearchPlan(safe).length;
+  const afterCount = describeSearchPlan(output).length;
+  if (beforeCount > afterCount) output.confidence = Math.min(output.confidence, 0.8);
+  return output;
 }
 
 function responseText(result) {
@@ -155,12 +397,12 @@ export async function createAiSearchPlan(env, query) {
   });
   const raw = responseText(result);
   if (!raw) throw new Error("The AI planner returned an empty response");
-  return sanitizeSearchPlan(JSON.parse(raw), query);
+  return groundSearchPlan(JSON.parse(raw), query);
 }
 
 export function parseClientSearchPlan(value, query = "") {
   if (!value) return fallbackSearchPlan(query);
-  try { return sanitizeSearchPlan(JSON.parse(value), query); }
+  try { return groundSearchPlan(JSON.parse(value), query, { addMissing: false }); }
   catch { return fallbackSearchPlan(query); }
 }
 
