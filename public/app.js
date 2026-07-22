@@ -1017,6 +1017,10 @@ function openSourceModal(mode = "candidate") {
   $("mappingRequirement").textContent = state.sourceMode === "employment"
     ? "Required: Work email, personal email, or phone. GreytHR exports usually use header row 2."
     : "Required: Full name, Timestamp, and either Email or Phone.";
+  $("sourcePreviewStatus").className = "source-preview-status";
+  $("sourcePreviewStatus").textContent = "";
+  $("readColumns").textContent = "Read columns";
+  $("mappingStep").classList.remove("active");
   $("mappingPanel").classList.add("hidden");
   $("saveSource").disabled = true;
   $("sourceBackdrop").classList.remove("hidden");
@@ -1026,8 +1030,17 @@ function closeSourceModal() { $("sourceBackdrop").classList.add("hidden"); }
 
 async function readSourceColumns() {
   const button = $("readColumns");
+  const urlInput = $("sourceUrl");
+  if (!urlInput.reportValidity()) return;
+  const status = $("sourcePreviewStatus");
   button.disabled = true;
   button.textContent = "Reading private Sheet…";
+  status.className = "source-preview-status loading";
+  status.textContent = "Connecting securely to Google Sheets… usually under 10 seconds.";
+  const slowNotice = setTimeout(() => {
+    button.textContent = "Still opening Sheet…";
+    status.textContent = "Google is taking longer than usual to open this Sheet. Talent Desk will wait up to 30 seconds.";
+  }, 8000);
   try {
     state.sourcePreview = await api("/api/admin/sources/preview", {
       method: "POST",
@@ -1037,9 +1050,18 @@ async function readSourceColumns() {
     $("mappingPanel").classList.remove("hidden");
     $("mappingStep").classList.add("active");
     renderMapping();
+    status.className = "source-preview-status success";
+    status.textContent = `${state.sourcePreview.headers.length} columns and ${state.sourcePreview.totalRows} ${state.sourceMode === "employment" ? "employee" : "response"} rows found. Continue to column mapping.`;
     toast(`${state.sourcePreview.headers.length} columns found · ${state.sourcePreview.totalRows} ${state.sourceMode === "employment" ? "employee" : "response"} rows`);
-  } catch (error) { toast(error.message); }
-  finally { button.disabled = false; button.textContent = "Read columns"; }
+  } catch (error) {
+    status.className = "source-preview-status error";
+    status.textContent = error.message;
+    toast(error.message);
+  } finally {
+    clearTimeout(slowNotice);
+    button.disabled = false;
+    button.textContent = state.sourcePreview ? "Refresh columns" : "Try reading columns again";
+  }
 }
 
 async function saveSource(event) {

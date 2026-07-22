@@ -559,6 +559,14 @@ button:disabled { cursor: not-allowed; opacity: .48; transform: none !important;
 .wizard-steps { margin: 17px 0; display: grid; grid-template-columns: repeat(3,1fr); gap: 4px; }
 .wizard-steps span { padding: 8px; border-radius: 6px; color: var(--muted); background: #f0f3f4; font-size: 7px; font-weight: 700; text-align: center; }
 .wizard-steps span.active { color: var(--purple); background: var(--purple-soft); }
+.source-preview-action { margin-top: 4px; display: flex; align-items: center; gap: 12px; }
+.source-preview-action button { flex: 0 0 auto; }
+.source-preview-status { max-width: 610px; margin: 0; color: var(--muted); font-size: 7px; line-height: 1.45; }
+.source-preview-status.loading { padding-left: 12px; position: relative; color: #755d1a; }
+.source-preview-status.loading::before { content: ""; width: 7px; height: 7px; position: absolute; left: 0; top: 2px; border: 2px solid #ead89b; border-top-color: #9a7419; border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.source-preview-status.success { color: var(--green); font-weight: 700; }
+.source-preview-status.error { padding: 8px 10px; border-radius: 7px; color: var(--red); background: #fff2ef; }
 .mapping-panel { margin-top: 18px; padding-top: 17px; border-top: 1px solid var(--line); }
 .mapping-heading { display: flex; justify-content: space-between; gap: 20px; align-items: start; }
 .mapping-heading h3 { margin: 0; font-size: 13px; }
@@ -720,6 +728,8 @@ button:disabled { cursor: not-allowed; opacity: .48; transform: none !important;
   .evidence-grid { grid-template-columns: 1fr; }
   .form-grid.two { grid-template-columns: 1fr; }
   .source-modal { padding: 22px 16px; }
+  .source-preview-action { align-items: stretch; flex-direction: column; }
+  .source-preview-action button { width: 100%; }
   .mapping-grid label { grid-template-columns: 1fr; }
   .access-row { grid-template-columns: 1fr auto; }
   .access-row .role-pill, .access-row > span:not(.role-pill), .access-row .remove-access { justify-self: start; }

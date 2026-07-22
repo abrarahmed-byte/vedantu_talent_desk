@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { connectorRequest, mergeStandardized, parseSpreadsheetId, standardizeEmploymentRow, standardizeRow, withIdentityLocks } from "../src/sync.js";
+import { connectorRequest, connectorTimeoutMessage, connectorTimeoutMs, mergeStandardized, parseSpreadsheetId, standardizeEmploymentRow, standardizeRow, withIdentityLocks } from "../src/sync.js";
 
 test("parses a Google Spreadsheet URL or id", () => {
   const id = "1AbCdEfGhIjKlMnOpQrStUvWxYz123456";
@@ -98,4 +98,11 @@ test("temporary connector failures are marked for an automatic retry", async (co
     connectorRequest({ APPS_SCRIPT_CONNECTOR_URL: "https://connector.example", CONNECTOR_SECRET: "test" }, { action: "readRows" }),
     (error) => error.retryable === true,
   );
+});
+
+test("interactive Sheet previews wait for Apps Script cold starts without promising a background retry", () => {
+  assert.equal(connectorTimeoutMs("preview"), 30000);
+  assert.match(connectorTimeoutMessage("preview"), /Select Read columns again/);
+  assert.doesNotMatch(connectorTimeoutMessage("preview"), /retry automatically/i);
+  assert.match(connectorTimeoutMessage("readRows"), /background sync will retry automatically/i);
 });

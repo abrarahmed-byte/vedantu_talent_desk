@@ -6,9 +6,9 @@
     <meta name="description" content="Vedantu Talent Desk central candidate repository">
     <meta name="robots" content="noindex,nofollow">
     <title>Vedantu Talent Desk</title>
-    <link rel="stylesheet" href="/styles.css?v=20260722-9">
+    <link rel="stylesheet" href="/styles.css?v=20260722-10">
     <script src="/export-xlsx.js?v=20260722-8" defer></script>
-    <script src="/app.js?v=20260722-9" defer></script>
+    <script src="/app.js?v=20260722-10" defer></script>
   </head>
   <body class="auth-pending">
     <div class="auth-loader" id="authLoader" aria-label="Checking your Talent Desk session"><span class="v-mark"><i></i><i></i></span><p>Opening Vedantu Talent Desk…</p></div>
@@ -184,7 +184,7 @@
           <label class="hidden" id="employmentStatusField">Employee file type<select id="employmentStatus"><option>Active employee</option><option>Former employee</option></select></label>
         </div>
         <label>Google Sheet URL<input id="sourceUrl" type="url" required placeholder="https://docs.google.com/spreadsheets/d/…"></label>
-        <button class="outline-button" type="button" id="readColumns">Read columns</button>
+        <div class="source-preview-action"><button class="outline-button" type="button" id="readColumns">Read columns</button><p class="source-preview-status" id="sourcePreviewStatus" role="status" aria-live="polite"></p></div>
         <div class="mapping-panel hidden" id="mappingPanel">
           <div class="mapping-heading"><div><h3>Confirm column mapping</h3><p id="mappingSummary">Columns are matched automatically. Change only what looks wrong.</p></div><span id="mappingCoverage">0 mapped</span></div>
           <div class="mapping-grid" id="mappingGrid"></div>

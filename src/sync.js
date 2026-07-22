@@ -500,11 +500,24 @@ async function sweepEmploymentSource(env, sourceId, syncToken) {
   }
 }
 
+export function connectorTimeoutMs(action) {
+  if (action === "preview") return 30000;
+  if (action === "readResume") return 30000;
+  return 25000;
+}
+
+export function connectorTimeoutMessage(action) {
+  if (action === "preview") return "Google Sheets took too long to open this Sheet. Select Read columns again. If it repeats, confirm the Apps Script owner can open the Sheet and that the tab name is correct.";
+  if (action === "readResume") return "Google Drive took too long to return this résumé; the background résumé review will retry automatically";
+  return "Google Sheets took too long to return rows; the background sync will retry automatically";
+}
+
 export async function connectorRequest(env, payload) {
   if (!env.APPS_SCRIPT_CONNECTOR_URL || !env.CONNECTOR_SECRET) throw new Error("The Google Sheets connector has not been configured yet");
   const connectorSecret = await getConnectorSecret(env);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12000);
+  const action = String(payload?.action || "");
+  const timeout = setTimeout(() => controller.abort(), connectorTimeoutMs(action));
   try {
     const response = await fetch(env.APPS_SCRIPT_CONNECTOR_URL, {
       method: "POST",
@@ -521,8 +534,8 @@ export async function connectorRequest(env, payload) {
     return result;
   } catch (error) {
     if (error?.name === "AbortError") {
-      const timeoutError = new Error("Google connector timed out; the batch will retry automatically");
-      timeoutError.retryable = true;
+      const timeoutError = new Error(connectorTimeoutMessage(action));
+      timeoutError.retryable = action !== "preview";
       throw timeoutError;
     }
     throw error;
