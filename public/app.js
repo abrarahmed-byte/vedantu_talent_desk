@@ -169,12 +169,33 @@ function employmentClass(value) {
   return "";
 }
 
-function aiBadge(candidate) {
-  if (candidate.ai_status !== "completed" || !candidate.ai_profile) return `<span class="ai-badge pending">AI type pending</span>`;
-  const facts = candidate.ai_profile.facts || [];
+function resumeEvidenceStats(candidate) {
+  const facts = Array.isArray(candidate.ai_profile?.facts) ? candidate.ai_profile.facts : [];
   const supported = facts.filter((fact) => fact.resume_status === "supported").length;
   const claims = facts.filter((fact) => fact.resume_status === "claim_only").length;
-  return `<span class="ai-badge verified">✦ ${supported} resume-backed</span>${claims ? `<span class="ai-badge claim">${claims} claim-only</span>` : ""}`;
+  const conflicts = facts.filter((fact) => fact.resume_status === "contradicted").length;
+  const reviewed = supported + claims + conflicts;
+  return {
+    facts,
+    supported,
+    claims,
+    conflicts,
+    reviewed,
+    coverage: reviewed ? Math.round((supported / reviewed) * 100) : 0,
+    completed: candidate.ai_status === "completed" && Boolean(candidate.ai_profile),
+  };
+}
+
+function resumeEvidenceSummary(candidate) {
+  const stats = resumeEvidenceStats(candidate);
+  if (!stats.completed) {
+    return `<div class="resume-check-compact pending"><div><b>R&eacute;sum&eacute; check pending</b><span>Application claims have not been compared yet</span></div></div>`;
+  }
+  if (!stats.reviewed) {
+    return `<div class="resume-check-compact pending"><div><b>R&eacute;sum&eacute; processed</b><span>No comparable claims were found</span></div></div>`;
+  }
+  const conflict = stats.conflicts ? `<span class="conflict">${stats.conflicts} ${stats.conflicts === 1 ? "conflict" : "conflicts"}</span>` : "";
+  return `<div class="resume-check-compact"><div class="resume-check-title"><b>R&eacute;sum&eacute; evidence</b><span>${stats.coverage}% supported</span></div><div class="resume-coverage" aria-label="${stats.coverage}% of reviewed claims supported by r&eacute;sum&eacute;"><i style="width:${stats.coverage}%"></i></div><div class="resume-check-counts"><span class="supported">${stats.supported} confirmed</span>${stats.claims ? `<span class="claim">${stats.claims} application-only</span>` : ""}${conflict}</div></div>`;
 }
 
 function renderSearchPlan(plan = state.searchPlan, criteria = state.searchCriteria, mode = state.searchPlanMode, warning = "") {
@@ -258,8 +279,8 @@ function profileTypeInfo(candidate) {
   const confidence = Math.round((Number(candidate.classification_confidence) || 0) * 100);
   const reviewed = candidate.ai_status === "completed" && recommendation;
   const label = reviewed
-    ? recommendation === "Unclear" ? `AI: unclear${confidence ? ` · ${confidence}%` : ""}` : `AI: ${recommendation}${confidence ? ` · ${confidence}%` : ""}`
-    : "Awaiting AI classification";
+    ? recommendation === "Unclear" ? `AI review unclear${confidence ? ` · ${confidence}%` : ""}` : `AI recommends ${recommendation}${confidence ? ` · ${confidence}%` : ""}`
+    : "AI review pending";
   const css = reviewed ? recommendation.toLowerCase().replace(/\s+/g, "-") : "pending";
   return { recommendation, effective, confidence, reviewed, label, css };
 }
@@ -285,9 +306,10 @@ function renderCandidates() {
         </button>
       </div>
       <div class="profile-fit">
-        <div class="profile-labels"><span class="track-pill ${escapeHtml(profileType.css)}">${escapeHtml(profileType.label)}</span>${aiBadge(candidate)}</div>
+        <div class="profile-labels"><span class="track-pill ${escapeHtml(profileType.css)}">${escapeHtml(profileType.label)}</span></div>
         <b>${escapeHtml(candidate.subject_display || candidate.role)}</b>
         <span>${profileType.effective === "Teacher" ? "Grades / levels: " : "Focus: "}${escapeHtml(candidate.grades_display || candidate.role)}</span>
+        ${resumeEvidenceSummary(candidate)}
         ${(candidate.match_reasons || []).length ? `<small class="match-reasons">AI preference match: ${escapeHtml(candidate.match_reasons.slice(0, 2).join(" / "))}</small>` : ""}
         <em class="employment-pill ${employmentClass(candidate.employment_status)}">${escapeHtml(candidate.employment_status)}${escapeHtml(hires)}</em>
       </div>
@@ -583,21 +605,32 @@ function additionalFacts(candidate) {
 
 function aiEvidenceSection(candidate) {
   const profile = candidate.ai_profile;
-  if (!profile?.profile_classification) return `<section class="drawer-section ai-evidence"><div class="evidence-heading"><div><h3>Résumé profile recommendation</h3><p>Not processed with the latest classification model. The source category remains visible but is not treated as résumé-verified.</p></div><span class="ai-badge pending">Awaiting AI</span></div></section>`;
+  if (!profile?.profile_classification) return `<section class="drawer-section ai-intelligence pending"><div class="evidence-section-heading"><div><small>R&eacute;sum&eacute; intelligence</small><h3>AI review pending</h3><p>The application is searchable now. Its claims have not yet been compared with the r&eacute;sum&eacute;.</p></div><span class="evidence-status pending">Pending</span></div></section>`;
   const classification = profile.profile_classification;
   const confidence = Math.round((Number(classification.confidence) || 0) * 100);
   const classificationCss = String(classification.recommended_track || "Unclear").toLowerCase().replace(/\s+/g, "-");
-  const classificationEvidence = (classification.evidence || []).slice(0, 3).map((item) => `<p>“${escapeHtml(item.quote)}”${item.page ? ` · page ${escapeHtml(item.page)}` : ""}</p>`).join("");
-  const comparison = candidate.classification_disagrees
-    ? `Differs from source category: ${escapeHtml(candidate.track)}`
-    : `Source category: ${escapeHtml(candidate.track)}${classification.recommended_track === "Unclear" ? " · human review needed" : ""}`;
-  const facts = (profile.facts || []).filter((item) => ["subject", "exam", "grade", "board", "language", "role", "qualification", "college"].includes(item.category));
-  const items = facts.slice(0, 24).map((item) => {
-    const status = item.resume_status === "supported" ? "Resume-backed" : item.resume_status === "contradicted" ? "Conflict" : "Claim only";
+  const stats = resumeEvidenceStats(candidate);
+  const classificationEvidence = (classification.evidence || []).slice(0, 2).map((item) => `<li>&ldquo;${escapeHtml(item.quote)}&rdquo;${item.page ? ` <span>page ${escapeHtml(item.page)}</span>` : ""}</li>`).join("");
+  const sourceComparison = candidate.classification_disagrees
+    ? `<span class="source-comparison warning">Source form says ${escapeHtml(candidate.track)}</span>`
+    : `<span class="source-comparison">Source form: ${escapeHtml(candidate.track)}</span>`;
+  const visibleFacts = stats.facts.filter((item) => ["subject", "exam", "grade", "board", "language", "role", "qualification", "college", "employer", "skill", "city"].includes(item.category));
+  const categoryLabels = { subject: "Subject", exam: "Exam", grade: "Grade / level", board: "Board", language: "Language", role: "Role", qualification: "Qualification", college: "College", employer: "Employer", skill: "Skill", city: "City" };
+  const factCard = (item) => {
     const evidence = (item.evidence || [])[0];
-    return `<article class="evidence-row ${escapeHtml(item.resume_status)}"><div><small>${escapeHtml(item.category)}</small><b>${escapeHtml(item.value)}</b>${evidence?.quote ? `<p>“${escapeHtml(evidence.quote)}”${evidence.page ? ` · page ${escapeHtml(evidence.page)}` : ""}</p>` : ""}</div><span>${escapeHtml(status)}</span></article>`;
-  }).join("");
-  return `<section class="drawer-section ai-evidence"><div class="classification-card ${escapeHtml(classificationCss)}"><div><small>AI résumé recommendation</small><h3>${escapeHtml(classification.recommended_track)} profile</h3><p>${escapeHtml(classification.rationale)}</p>${classificationEvidence}</div><strong>${confidence}%<small>confidence</small></strong><span>${comparison}</span></div><div class="evidence-heading"><div><h3>Résumé evidence check</h3><p>${escapeHtml(candidate.ai_summary || profile.summary || "Application claims reconciled with the résumé.")}</p></div><span class="ai-badge verified">AI processed</span></div><div class="evidence-list">${items || "<p>No material evidence was extracted.</p>"}</div><p class="evidence-note">“Claim only” means the résumé did not evidence the form selection; it does not prove the claim is false. AI profile type is a routing recommendation and must not be used as the sole hiring decision.</p></section>`;
+    return `<article class="evidence-fact ${escapeHtml(item.resume_status)}"><div><small>${escapeHtml(categoryLabels[item.category] || item.category)}</small><b>${escapeHtml(item.value)}</b></div>${evidence?.quote ? `<p>&ldquo;${escapeHtml(evidence.quote)}&rdquo;${evidence.page ? ` <span>page ${escapeHtml(evidence.page)}</span>` : ""}</p>` : ""}</article>`;
+  };
+  const evidenceGroup = (status, title, description) => {
+    const allItems = visibleFacts.filter((item) => item.resume_status === status);
+    const items = allItems.slice(0, 24);
+    if (!allItems.length) return "";
+    const remaining = allItems.length - items.length;
+    return `<div class="evidence-group ${escapeHtml(status)}"><div class="evidence-group-heading"><div><h4>${title}</h4><p>${escapeHtml(description)}</p></div><span>${allItems.length}</span></div><div class="evidence-grid">${items.map(factCard).join("")}</div>${remaining ? `<p class="evidence-more">${remaining} more items are retained in the structured profile.</p>` : ""}</div>`;
+  };
+  const supportedGroup = evidenceGroup("supported", "Confirmed by r&eacute;sum&eacute;", "The parsed résumé contains evidence for these application details.");
+  const claimGroup = evidenceGroup("claim_only", "Application-only claims", "Selected in the application, but not found in the résumé. This does not mean the claim is false.");
+  const conflictGroup = evidenceGroup("contradicted", "Conflicts to review", "The application and résumé appear to disagree. A recruiter should verify these items.");
+  return `<section class="drawer-section ai-intelligence"><div class="intelligence-card ${escapeHtml(classificationCss)}"><div class="intelligence-heading"><div><small>R&eacute;sum&eacute; intelligence</small><h3>AI recommends ${escapeHtml(classification.recommended_track)} profile</h3><p>${escapeHtml(classification.rationale)}</p></div><strong>${confidence}%<small>confidence</small></strong></div><div class="intelligence-meta">${sourceComparison}<span>AI-assisted review</span></div><div class="evidence-metrics"><div class="supported"><b>${stats.supported}</b><span>Confirmed by r&eacute;sum&eacute;</span></div><div class="claim"><b>${stats.claims}</b><span>Application-only</span></div><div class="conflict"><b>${stats.conflicts}</b><span>Conflicts</span></div><div class="coverage"><b>${stats.coverage}%</b><span>Evidence coverage</span><div class="resume-coverage"><i style="width:${stats.coverage}%"></i></div></div></div></div><div class="resume-summary"><small>R&eacute;sum&eacute; summary</small><p>${escapeHtml(candidate.ai_summary || profile.summary || "Application claims reconciled with the résumé.")}</p></div>${classificationEvidence ? `<details class="recommendation-evidence"><summary>Why AI made this recommendation</summary><ul>${classificationEvidence}</ul></details>` : ""}<div class="evidence-groups">${conflictGroup}${supportedGroup}${claimGroup || (!visibleFacts.length ? '<div class="evidence-empty">No comparable application claims were extracted.</div>' : "")}</div><p class="evidence-note">This compares form claims with résumé text; it is not a background verification. AI recommendations support routing and must not be the sole hiring decision.</p></section>`;
 }
 
 function historyEntry(entry) {
@@ -631,9 +664,9 @@ async function openCandidate(candidateId, focus = "profile") {
     $("drawerContent").innerHTML = `
       <div class="drawer-hero"><span class="avatar xlarge ${profileType.effective === "Teacher" ? "orange" : "purple"}">${escapeHtml(candidate.initials)}</span><div><h2>${escapeHtml(candidate.name)}</h2><p>${escapeHtml(candidate.role)}</p><small>${escapeHtml(candidate.city)}, ${escapeHtml(candidate.state)} · ${escapeHtml(candidate.work_mode)}</small></div><div class="drawer-score"><b>${candidate.match_percent}%</b><span>profile match</span></div></div>
       <div class="drawer-actions"><button class="primary-button" id="drawerResume">Resume preview</button><button class="outline-button" id="drawerCall">I called this profile</button><button class="outline-button" id="drawerHistory">View Log History</button></div>
-      <section class="drawer-section"><h3>Candidate information</h3><div class="fact-grid">${fact("Applied", formatDate(candidate.applied_at, true))}${fact("Location", `${candidate.city}, ${candidate.state}`)}${fact("Phone", candidate.phone)}${fact("Email", candidate.email)}${fact("Source Sheet", candidate.source_sheet)}${fact("Work mode", candidate.work_mode)}</div></section>
-      <section class="drawer-section"><h3>${profileType.effective === "Teacher" ? "Teaching profile" : "Professional profile"}</h3><div class="fact-grid">${fact("AI profile recommendation", profileType.reviewed ? profileType.label : "Awaiting résumé classification")}${fact("Source category", candidate.track)}${fact("Subject / function", candidate.subject_display)}${fact("Grades / levels", candidate.grades_display)}${fact("Boards", candidate.boards_display || "Not applicable")}${fact("Languages", candidate.languages_display)}${fact("Experience", `${candidate.experience_months} months`)}${fact("Education", `${candidate.education} · ${candidate.college}`)}</div></section>
       ${aiEvidenceSection(candidate)}
+      <section class="drawer-section"><h3>Candidate information</h3><div class="fact-grid">${fact("Applied", formatDate(candidate.applied_at, true))}${fact("Location", `${candidate.city}, ${candidate.state}`)}${fact("Phone", candidate.phone)}${fact("Email", candidate.email)}${fact("Source Sheet", candidate.source_sheet)}${fact("Work mode", candidate.work_mode)}</div></section>
+      <section class="drawer-section"><h3>${profileType.effective === "Teacher" ? "Teaching profile" : "Professional profile"}</h3><div class="fact-grid">${fact("Subject / function", candidate.subject_display)}${fact("Grades / levels", candidate.grades_display)}${fact("Boards", candidate.boards_display || "Not applicable")}${fact("Languages", candidate.languages_display)}${fact("Experience", `${candidate.experience_months} months`)}${fact("Education", `${candidate.education} · ${candidate.college}`)}</div></section>
       ${additionalFacts(candidate)}
       <section class="drawer-section"><h3>Application history</h3><p class="section-note">Every application remains linked to this one candidate profile. Freshness and the primary source use the latest application date.</p>${applications.length ? applications.map(applicationEntry).join("") : "<p>No source-row history is available yet.</p>"}</section>
       <section class="drawer-section"><h3>Employment and duplicate checks</h3><div class="fact-grid">${fact("Employment status", candidate.employment_status)}${fact("Times hired", candidate.employment_times_hired)}${fact("Duplicate source rows merged", candidate.duplicate_count)}${fact("Canonical identity", "Email / phone exact match")}</div></section>
