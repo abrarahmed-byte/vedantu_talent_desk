@@ -641,7 +641,7 @@ async function startAiBatch(request, env, user, ctx) {
   requireSecureAdmin(user, env);
   if (!env.OPENAI_API_KEY) return json({ error: "Add OPENAI_API_KEY in Cloudflare before starting résumé processing" }, 409);
   const payload = await request.json().catch(() => ({}));
-  const result = await enqueueAiBatch(env, payload.limit || 20);
+  const result = await enqueueAiBatch(env, payload.limit || Number(env.AI_QUEUE_SIZE) || 250);
   await env.DB.prepare("INSERT INTO activity_logs(id, candidate_id, actor, action, detail, actor_email) VALUES (?, NULL, ?, 'ai_batch_started', ?, ?)")
     .bind(crypto.randomUUID(), user.displayName, `${result.queued} résumés queued for evidence extraction`, clean(user.email, 320).toLowerCase()).run();
   if (ctx?.waitUntil) ctx.waitUntil(processAiEnrichment(env));

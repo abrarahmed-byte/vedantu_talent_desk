@@ -5,9 +5,13 @@ export const AI_SCHEMA_VERSION = "candidate-evidence-v3";
 export const DEFAULT_AI_MODEL = "gpt-5-nano";
 
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
-const MAX_BATCH_SIZE = 20;
-const MAX_PREPARE_PER_RUN = 4;
-const MAX_INGEST_PER_RUN = 4;
+const MAX_QUEUE_SIZE = 500;
+const DEFAULT_QUEUE_SIZE = 250;
+const MAX_BATCH_SIZE = 250;
+const MAX_PREPARE_PER_RUN = 20;
+const MAX_INGEST_PER_RUN = 25;
+const DEFAULT_MIN_SUBMIT_SIZE = 20;
+const STALE_PREPARATION_MINUTES = 10;
 const MAX_RESUME_BYTES = 5 * 1024 * 1024;
 const OPEN_BATCH_STATUSES = new Set(["validating", "in_progress", "finalizing", "cancelling"]);
 
@@ -188,37 +192,42 @@ async function deleteOpenAiFile(env, fileId) {
   await openAiFetch(env, `/files/${encodeURIComponent(fileId)}`, { method: "DELETE" }).catch(() => null);
 }
 
-async function candidateClaims(env, candidateId) {
-  const [profile, records] = await Promise.all([
-    env.DB.prepare("SELECT standardized_json FROM candidate_profiles WHERE candidate_id=?").bind(candidateId).first(),
-    env.DB.prepare("SELECT raw_json FROM source_records WHERE candidate_id=? ORDER BY updated_at DESC LIMIT 5").bind(candidateId).all(),
-  ]);
+function claimsFromQueueRow(row) {
   let standardized = {};
-  try { standardized = JSON.parse(profile?.standardized_json || "{}"); } catch { standardized = {}; }
-  const sourceRows = (records.results || []).map((record) => {
-    try { return JSON.parse(record.raw_json || "{}"); } catch { return {}; }
+  let records = [];
+  try { standardized = JSON.parse(row?.standardized_json || "{}"); } catch { standardized = {}; }
+  try { records = JSON.parse(row?.source_rows_json || "[]"); } catch { records = []; }
+  const sourceRows = (Array.isArray(records) ? records : []).map((record) => {
+    try { return typeof record === "string" ? JSON.parse(record || "{}") : record || {}; } catch { return {}; }
   });
   return compactObject({ standardized, sourceRows });
 }
 
-export async function enqueueAiBatch(env, requestedLimit = MAX_BATCH_SIZE) {
+export async function enqueueAiBatch(env, requestedLimit = DEFAULT_QUEUE_SIZE) {
   if (!env.OPENAI_API_KEY) throw new Error("Add the OpenAI API key in Cloudflare before starting a batch");
   if (!env.APPS_SCRIPT_CONNECTOR_URL || !env.CONNECTOR_SECRET) throw new Error("The Google Drive connector is not configured");
-  const limit = Math.min(MAX_BATCH_SIZE, Math.max(1, Math.round(Number(requestedLimit) || MAX_BATCH_SIZE)));
-  const rows = (await env.DB.prepare(`SELECT c.id, c.resume_url FROM candidates c
+  const limit = Math.min(MAX_QUEUE_SIZE, Math.max(1, Math.round(Number(requestedLimit) || DEFAULT_QUEUE_SIZE)));
+  const rows = (await env.DB.prepare(`SELECT c.id, c.resume_url, p.standardized_json,
+    COALESCE((SELECT json_group_array(raw_json) FROM (
+      SELECT raw_json FROM source_records sr WHERE sr.candidate_id=c.id ORDER BY updated_at DESC LIMIT 5
+    )), '[]') AS source_rows_json
+    FROM candidates c LEFT JOIN candidate_profiles p ON p.candidate_id=c.id
     WHERE trim(c.resume_url) <> '' AND NOT EXISTS (
       SELECT 1 FROM ai_extraction_jobs j WHERE j.candidate_id=c.id AND j.prompt_version=?
     ) ORDER BY c.applied_at DESC LIMIT ?`).bind(AI_PROMPT_VERSION, limit).all()).results || [];
   let queued = 0;
-  for (const row of rows) {
+  const statements = await Promise.all(rows.map(async (row) => {
     const dedupeKey = await sha256(`${row.id}|${row.resume_url}|${AI_PROMPT_VERSION}`);
-    const claims = await candidateClaims(env, row.id);
-    const result = await env.DB.prepare(`INSERT OR IGNORE INTO ai_extraction_jobs(
+    const claims = claimsFromQueueRow(row);
+    return env.DB.prepare(`INSERT OR IGNORE INTO ai_extraction_jobs(
       id, candidate_id, dedupe_key, status, model, prompt_version, schema_version, resume_url, claims_json
     ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)`).bind(
       crypto.randomUUID(), row.id, dedupeKey, model(env), AI_PROMPT_VERSION, AI_SCHEMA_VERSION, row.resume_url, JSON.stringify(claims),
-    ).run();
-    queued += Number(result.meta?.changes || 0);
+    );
+  }));
+  for (let index = 0; index < statements.length; index += 75) {
+    const results = await env.DB.batch(statements.slice(index, index + 75));
+    queued += results.reduce((sum, result) => sum + Number(result.meta?.changes || 0), 0);
   }
   return { selected: rows.length, queued, alreadyCurrent: rows.length - queued, limit };
 }
@@ -251,10 +260,28 @@ async function prepareOneJob(env, job) {
 }
 
 async function prepareQueuedJobs(env) {
+  const limit = Math.min(MAX_PREPARE_PER_RUN, Math.max(1, Number(env.AI_PREPARE_PER_RUN) || MAX_PREPARE_PER_RUN));
   const jobs = (await env.DB.prepare(`SELECT * FROM ai_extraction_jobs WHERE status='queued'
-    ORDER BY created_at LIMIT ?`).bind(Number(env.AI_PREPARE_PER_RUN) || MAX_PREPARE_PER_RUN).all()).results || [];
-  for (const job of jobs) await prepareOneJob(env, job);
+    ORDER BY created_at LIMIT ?`).bind(limit).all()).results || [];
+  for (let index = 0; index < jobs.length; index += 4) {
+    await Promise.all(jobs.slice(index, index + 4).map((job) => prepareOneJob(env, job)));
+  }
   return jobs.length;
+}
+
+async function recoverStalePreparations(env) {
+  const result = await env.DB.prepare(`UPDATE ai_extraction_jobs SET status='queued',
+    error_message='Preparation resumed automatically after an interrupted run', updated_at=CURRENT_TIMESTAMP
+    WHERE status='preparing' AND updated_at <= datetime('now', ?)`)
+    .bind(`-${STALE_PREPARATION_MINUTES} minutes`).run();
+  return Number(result.meta?.changes || 0);
+}
+
+export function shouldSubmitPreparedBatch(prepared, waiting, minimumSize) {
+  const ready = Math.max(0, Number(prepared) || 0);
+  const remaining = Math.max(0, Number(waiting) || 0);
+  const minimum = Math.max(1, Number(minimumSize) || DEFAULT_MIN_SUBMIT_SIZE);
+  return ready > 0 && (ready >= minimum || remaining === 0);
 }
 
 function buildBatchRequest(job) {
@@ -285,11 +312,12 @@ export function buildBatchJsonl(jobs) {
 
 async function submitPreparedBatch(env) {
   const batchSize = Math.min(MAX_BATCH_SIZE, Math.max(1, Number(env.AI_BATCH_SIZE) || MAX_BATCH_SIZE));
+  const minimumSize = Math.min(batchSize, Math.max(1, Number(env.AI_MIN_SUBMIT_SIZE) || DEFAULT_MIN_SUBMIT_SIZE));
   const readiness = await env.DB.prepare(`SELECT
     SUM(CASE WHEN status='prepared' AND batch_id='' THEN 1 ELSE 0 END) AS prepared,
     SUM(CASE WHEN status IN ('queued','preparing') THEN 1 ELSE 0 END) AS waiting
     FROM ai_extraction_jobs`).first();
-  if (Number(readiness?.prepared || 0) < batchSize && Number(readiness?.waiting || 0) > 0) return null;
+  if (!shouldSubmitPreparedBatch(readiness?.prepared, readiness?.waiting, minimumSize)) return null;
   const first = await env.DB.prepare(`SELECT model FROM ai_extraction_jobs WHERE status='prepared' AND batch_id=''
     ORDER BY created_at LIMIT 1`).first();
   if (!first?.model) return null;
@@ -401,7 +429,7 @@ async function ingestJsonl(env, text, isErrorFile = false, limit = MAX_INGEST_PE
 }
 
 async function finishBatch(env, local, remote) {
-  const ingestLimit = Math.max(1, Number(env.AI_INGEST_PER_RUN) || MAX_INGEST_PER_RUN);
+  const ingestLimit = Math.min(100, Math.max(1, Number(env.AI_INGEST_PER_RUN) || MAX_INGEST_PER_RUN));
   let processed = 0;
   if (remote.output_file_id) {
     const output = await openAiFetch(env, "/files/" + encodeURIComponent(remote.output_file_id) + "/content").then((response) => response.text());
@@ -533,17 +561,18 @@ export async function setAiAutomation(env, enabled, user) {
 
 export async function processAiEnrichment(env) {
   if (!env.OPENAI_API_KEY || !env.APPS_SCRIPT_CONNECTOR_URL || !env.CONNECTOR_SECRET) return { configured: false };
+  const recovered = await recoverStalePreparations(env);
   await pollBatches(env);
   const retried = await autoRetryAiFailures(env);
   let automaticallyQueued = 0;
   if (await aiAutomationEnabled(env)) {
     const active = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ai_extraction_jobs
       WHERE status IN ('queued','preparing','prepared','batched')`).first();
-    if (!Number(active?.count || 0)) automaticallyQueued = (await enqueueAiBatch(env, MAX_BATCH_SIZE)).queued;
+    if (!Number(active?.count || 0)) automaticallyQueued = (await enqueueAiBatch(env, Number(env.AI_QUEUE_SIZE) || DEFAULT_QUEUE_SIZE)).queued;
   }
   const prepared = await prepareQueuedJobs(env);
   const batchId = await submitPreparedBatch(env);
-  return { configured: true, prepared, batchId, retried, automaticallyQueued };
+  return { configured: true, prepared, batchId, retried, recovered, automaticallyQueued };
 }
 
 export async function getAiMeta(env, includeFailures = false) {
@@ -551,9 +580,12 @@ export async function getAiMeta(env, includeFailures = false) {
     env.DB.prepare(`SELECT
       COUNT(*) AS total,
       SUM(CASE WHEN status IN ('queued','preparing','prepared') THEN 1 ELSE 0 END) AS queued,
+      SUM(CASE WHEN status IN ('queued','preparing') THEN 1 ELSE 0 END) AS waiting,
+      SUM(CASE WHEN status='prepared' THEN 1 ELSE 0 END) AS prepared,
       SUM(CASE WHEN status='batched' THEN 1 ELSE 0 END) AS processing,
       SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
-      SUM(CASE WHEN status IN ('failed','no_resume') THEN 1 ELSE 0 END) AS failed
+      SUM(CASE WHEN status IN ('failed','no_resume') THEN 1 ELSE 0 END) AS failed,
+      MAX(CASE WHEN status IN ('queued','preparing','prepared','batched') THEN updated_at ELSE NULL END) AS last_progress_at
       FROM ai_extraction_jobs`).first(),
     env.DB.prepare("SELECT * FROM ai_batches ORDER BY created_at DESC LIMIT 1").first(),
     aiAutomationEnabled(env),
@@ -565,11 +597,16 @@ export async function getAiMeta(env, includeFailures = false) {
       : Promise.resolve({ results: [] }),
   ]);
   const failures = (failureRows.results || []).map((failure) => ({ ...failure, ...classifyAiFailure(failure.status, failure.error_message) }));
+  const batchSize = Math.min(MAX_BATCH_SIZE, Math.max(1, Number(env.AI_BATCH_SIZE) || MAX_BATCH_SIZE));
   return {
     configured: Boolean(env.OPENAI_API_KEY && env.APPS_SCRIPT_CONNECTOR_URL && env.CONNECTOR_SECRET),
     model: model(env),
-    batchSize: Math.min(MAX_BATCH_SIZE, Math.max(1, Number(env.AI_BATCH_SIZE) || MAX_BATCH_SIZE)),
-    counts: counts || { total: 0, queued: 0, processing: 0, completed: 0, failed: 0 },
+    batchSize,
+    queueSize: Math.min(MAX_QUEUE_SIZE, Math.max(1, Number(env.AI_QUEUE_SIZE) || DEFAULT_QUEUE_SIZE)),
+    preparePerRun: Math.min(MAX_PREPARE_PER_RUN, Math.max(1, Number(env.AI_PREPARE_PER_RUN) || MAX_PREPARE_PER_RUN)),
+    ingestPerRun: Math.min(100, Math.max(1, Number(env.AI_INGEST_PER_RUN) || MAX_INGEST_PER_RUN)),
+    minimumSubmitSize: Math.min(batchSize, Math.max(1, Number(env.AI_MIN_SUBMIT_SIZE) || DEFAULT_MIN_SUBMIT_SIZE)),
+    counts: counts || { total: 0, queued: 0, waiting: 0, prepared: 0, processing: 0, completed: 0, failed: 0 },
     latestBatch: recentBatch || null,
     automatic,
     failures,

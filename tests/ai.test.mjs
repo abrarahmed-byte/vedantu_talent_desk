@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { batchNeedsPolling, buildBatchJsonl, classifyAiFailure, extractResponseText, profileClassification, verificationForIntent } from "../src/ai.js";
+import { batchNeedsPolling, buildBatchJsonl, classifyAiFailure, extractResponseText, profileClassification, shouldSubmitPreparedBatch, verificationForIntent } from "../src/ai.js";
 
 test("batch lines use Responses, stored resume files and strict structured output", () => {
   const jsonl = buildBatchJsonl([{
@@ -60,6 +60,13 @@ test("completed batches with unfinished jobs are resumed after an interrupted wr
   assert.equal(batchNeedsPolling("completed", 20), true);
   assert.equal(batchNeedsPolling("finalizing", 0), true);
   assert.equal(batchNeedsPolling("completed", 0), false);
+});
+
+test("prepared resumes submit in rolling batches without stranding the final partial batch", () => {
+  assert.equal(shouldSubmitPreparedBatch(19, 30, 20), false);
+  assert.equal(shouldSubmitPreparedBatch(20, 30, 20), true);
+  assert.equal(shouldSubmitPreparedBatch(3, 0, 20), true);
+  assert.equal(shouldSubmitPreparedBatch(0, 0, 20), false);
 });
 
 test("resume classification remains separate from the source-sheet category", () => {

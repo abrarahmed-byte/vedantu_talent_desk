@@ -741,11 +741,17 @@ function renderMeta() {
   const aiDone = (Number(aiCounts.completed) || 0) + (Number(aiCounts.failed) || 0);
   const aiPercent = aiTotal ? Math.round(aiDone / aiTotal * 100) : 0;
   const latestBatch = ai.latestBatch;
-  const aiStage = !ai.configured ? "Setup required" : Number(aiCounts.processing) ? "OpenAI batch processing" : Number(aiCounts.queued) ? "Preparing résumé files" : aiTotal ? "Ready for the next batch" : "Ready for classification";
-  const aiEta = Number(aiCounts.processing) ? "Often faster, but allow up to 24 hours" : Number(aiCounts.queued) ? "Progress updates automatically every minute" : "Search remains instant while this runs";
-  $("aiPipeline").innerHTML = `<div class="ai-pipeline-copy"><span class="ai-orb">✦</span><div><b>${escapeHtml(aiStage)}</b><p>${ai.configured ? `${escapeHtml(ai.model)} · 50% Batch API discount · up to ${escapeHtml(ai.batchSize)} profiles per batch` : "Add the OpenAI API key in Cloudflare. No key is sent to the browser."}</p><small>${escapeHtml(aiEta)}${latestBatch ? ` · latest batch: ${escapeHtml(String(latestBatch.status).replaceAll("_", " "))}` : ""}</small></div></div><div class="ai-progress"><div><span>Queued <b>${Number(aiCounts.queued) || 0}</b></span><span>Processing <b>${Number(aiCounts.processing) || 0}</b></span><span>Classified <b>${Number(aiCounts.completed) || 0}</b></span><span>Needs attention <b>${Number(aiCounts.failed) || 0}</b></span></div><div class="progress"><i style="width:${aiPercent}%"></i></div><small>${aiDone} of ${aiTotal || 0} profiles finished · ${aiPercent}%</small></div>`;
+  const aiWaiting = Number(aiCounts.waiting) || 0;
+  const aiPrepared = Number(aiCounts.prepared) || 0;
+  const preparePerRun = Number(ai.preparePerRun) || 20;
+  const minimumSubmitSize = Number(ai.minimumSubmitSize) || 20;
+  const nextSubmissionMinutes = Math.max(1, Math.ceil(Math.max(0, minimumSubmitSize - aiPrepared) / preparePerRun));
+  const aiStage = !ai.configured ? "Setup required" : Number(aiCounts.processing) ? "OpenAI batch processing" : aiWaiting ? "Preparing résumé files" : aiPrepared ? "Submitting prepared résumés" : aiTotal ? "Ready for the next batch" : "Ready for classification";
+  const aiEta = Number(aiCounts.processing) ? "Often faster, but allow up to 24 hours" : aiWaiting ? `Preparing up to ${preparePerRun} profiles per minute · next submission in about ${nextSubmissionMinutes} min` : "Search remains instant while this runs";
+  const lastProgress = aiCounts.last_progress_at ? ` · last progress ${formatDate(aiCounts.last_progress_at, true)}` : "";
+  $("aiPipeline").innerHTML = `<div class="ai-pipeline-copy"><span class="ai-orb">✦</span><div><b>${escapeHtml(aiStage)}</b><p>${ai.configured ? `${escapeHtml(ai.model)} · 50% Batch API discount · queue up to ${escapeHtml(ai.queueSize || 250)} · rolling batches up to ${escapeHtml(ai.batchSize)}` : "Add the OpenAI API key in Cloudflare. No key is sent to the browser."}</p><small>${escapeHtml(aiEta)}${latestBatch ? ` · latest batch: ${escapeHtml(String(latestBatch.status).replaceAll("_", " "))}` : ""}${escapeHtml(lastProgress)}</small></div></div><div class="ai-progress"><div><span>Waiting <b>${aiWaiting}</b></span><span>Ready <b>${aiPrepared}</b></span><span>Processing <b>${Number(aiCounts.processing) || 0}</b></span><span>Classified <b>${Number(aiCounts.completed) || 0}</b></span><span>Needs attention <b>${Number(aiCounts.failed) || 0}</b></span></div><div class="progress"><i style="width:${aiPercent}%"></i></div><small>${aiDone} of ${aiTotal || 0} profiles finished · ${aiPercent}%</small></div>`;
   $("startAiBatch").disabled = !canManage || !ai.configured || Number(aiCounts.queued) > 0 || Number(aiCounts.processing) > 0;
-  $("startAiBatch").textContent = "Classify next 20 profiles";
+  $("startAiBatch").textContent = `Classify next ${Number(ai.queueSize) || 250} profiles`;
   $("aiOperations").classList.toggle("hidden", !canManage);
   if (canManage) {
     $("aiAutomation").checked = Boolean(ai.automatic);
@@ -1037,16 +1043,17 @@ async function manageSource(sourceId, action) {
 }
 
 async function startAiBatch() {
-  if (!window.confirm("Classify the next 20 unprocessed profiles? Their application rows and résumés will be sent to OpenAI in a discounted background batch.")) return;
+  const queueSize = Number(state.meta?.ai?.queueSize) || 250;
+  if (!window.confirm(`Classify the next ${queueSize} unprocessed profiles? Their application rows and résumés will be prepared in the background and sent through discounted rolling OpenAI batches.`)) return;
   const button = $("startAiBatch");
   button.disabled = true;
   button.textContent = "Queuing batch…";
   try {
-    const result = await api("/api/admin/ai/batch", { method: "POST", body: JSON.stringify({ limit: 20 }) });
+    const result = await api("/api/admin/ai/batch", { method: "POST", body: JSON.stringify({ limit: queueSize }) });
     toast(result.queued ? `${result.queued} profiles queued for résumé classification · you can keep using Talent Desk` : result.message);
     await loadMeta();
   } catch (error) { toast(error.message); }
-  finally { button.textContent = "Classify next 20 profiles"; }
+  finally { button.textContent = `Classify next ${queueSize} profiles`; }
 }
 
 async function retryAiFailure(jobId = "", retryableOnly = false) {
