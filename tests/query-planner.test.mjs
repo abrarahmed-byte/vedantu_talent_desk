@@ -188,3 +188,24 @@ test("OpenAI interpretation grounds AP/TS to location options the repository can
   assert.deepEqual(plan.required.keywords, []);
   assert.ok(describeSearchPlan(plan).filter((item) => item.field === "locations").every((item) => item.label.startsWith("Location option:")));
 });
+
+test("GPT converts applied in the past seven days into a real freshness filter", async () => {
+  const raw = {
+    interpretation: "Tamil teachers in Tamil Nadu who applied recently",
+    semantic_query: "Teachers Tamil Tamil Nadu applied in the past 7 days but",
+    required: bucket({ track: "Teacher", locations: ["Tamil Nadu"], languages: ["Tamil"], keywords: ["applied in the past 7 days", "but"], maximum_age_days: 7 }),
+    preferred: bucket(), excluded: bucket(), freshest_first: false, confidence: 0.97,
+  };
+  const query = "Teachers who can speak Tamil but in Tamil Nadu and applied in the past 7 days";
+  const plan = await createAiSearchPlan(openAiEnv(raw), query);
+  assert.equal(plan.required.track, "Teacher");
+  assert.deepEqual(plan.required.locations, ["Tamil Nadu"]);
+  assert.deepEqual(plan.required.languages, ["Tamil"]);
+  assert.equal(plan.required.maximum_age_days, 7);
+  assert.deepEqual(plan.required.keywords, []);
+  assert.deepEqual(plan.preferred.keywords, []);
+  assert.deepEqual(plan.excluded.keywords, []);
+  assert.ok(describeSearchPlan(plan).some((item) => item.label === "Applied within 7 days"));
+  assert.match(plan.interpretation, /Applied within 7 days/);
+  assert.doesNotMatch(plan.interpretation, /Context|\bbut\b|No exclusions/i);
+});

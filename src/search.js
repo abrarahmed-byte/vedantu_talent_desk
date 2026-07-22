@@ -7,6 +7,8 @@ const STOP_WORDS = new Set([
   "call", "calls", "called", "contact", "contacted", "view", "views", "teachers",
   "speak", "speaks", "speaking", "teach", "teaches", "taught", "dont", "include", "including",
   "region", "regions", "area", "areas",
+  "apply", "applied", "application", "applications", "past", "within", "ago", "but",
+  "day", "days", "week", "weeks",
 ]);
 
 const SYNONYMS = {

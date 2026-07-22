@@ -6,9 +6,9 @@
     <meta name="description" content="Vedantu Talent Desk central candidate repository">
     <meta name="robots" content="noindex,nofollow">
     <title>Vedantu Talent Desk</title>
-    <link rel="stylesheet" href="/styles.css?v=20260722-4">
-    <script src="/export-xlsx.js?v=20260722-4" defer></script>
-    <script src="/app.js?v=20260722-4" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=20260722-5">
+    <script src="/export-xlsx.js?v=20260722-5" defer></script>
+    <script src="/app.js?v=20260722-5" defer></script>
   </head>
   <body class="auth-pending">
     <div class="auth-loader" id="authLoader" aria-label="Checking your Talent Desk session"><span class="v-mark"><i></i><i></i></span><p>Opening Vedantu Talent Desk…</p></div>
@@ -74,27 +74,32 @@
           </div>
 
           <section class="search-panel">
-            <label for="searchInput">Describe the candidate you need in your own words</label>
-            <div class="search-box"><span>⌕</span><input id="searchInput" placeholder="Try: Recent JEE Physics teachers in Telangana, preferably Hindi-speaking, who we have not called" autocomplete="off"><button id="searchButton" class="primary-button">Ask AI to find →</button></div>
-            <p class="search-helper"><b>Required</b> must match. <b>Preferred</b> improves ranking only. <b>Excluded</b> removes profiles and appears only when you explicitly ask for an exclusion.</p>
-            <div class="filter-grid">
-              <label><span>Subject / function</span><select id="subjectFilter"><option>All subjects</option><option>Mathematics</option><option>Physics</option><option>English</option><option>Academic Operations</option><option>Performance Marketing</option></select></label>
-              <label><span>Language</span><select id="languageFilter"><option>All languages</option><option>English</option><option>Hindi</option><option>Malayalam</option><option>Urdu</option><option>Marathi</option><option>Gujarati</option></select></label>
-              <label><span>Experience</span><select id="experienceFilter"><option value="0">Any experience</option><option value="24">24+ months</option><option value="48">48+ months</option><option value="72">72+ months</option></select></label>
-              <label><span>Work mode</span><select id="workModeFilter"><option>Any work mode</option><option>Online</option><option>Offline</option><option>Hybrid</option><option>Remote</option></select></label>
-              <button id="clearFilters" class="filter-clear">Clear filters</button>
+            <div class="search-panel-heading">
+              <div><span>GPT talent search</span><label for="searchInput">Who are you looking for?</label><p>Describe the role like you would brief a recruiter. GPT turns it into searchable, editable criteria.</p></div>
+              <em>Searches rows + résumé evidence</em>
             </div>
-            <details class="advanced-filters">
-              <summary>More filters <span>views, calls and freshness</span></summary>
-              <div class="advanced-filter-grid">
-                <label><span>Minimum views</span><select id="minViewsFilter"><option value="0">Any views</option><option value="1">1+ views</option><option value="3">3+ views</option><option value="5">5+ views</option><option value="10">10+ views</option><option value="25">25+ views</option></select></label>
-                <label><span>Minimum calls</span><select id="minCallsFilter"><option value="0">Any calls</option><option value="1">1+ calls</option><option value="2">2+ calls</option><option value="3">3+ calls</option><option value="5">5+ calls</option></select></label>
-                <label><span>Latest application</span><select id="maxAgeFilter"><option value="0">Any date</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 6 months</option><option value="365">Last 12 months</option></select></label>
-                <label><span>Freshness decay</span><select id="freshnessFilter"><option value="1:120">Balanced · 120 days</option><option value="1:365">Gentle · 365 days</option><option value="2:30">Strong · 30 days</option><option value="0:0">Off · relevance only</option></select></label>
+            <div class="search-box"><span>⌕</span><input id="searchInput" placeholder="Try: Tamil teachers in Tamil Nadu who applied in the past 7 days" autocomplete="off"><button id="searchButton" class="primary-button">Find candidates →</button></div>
+            <div class="search-examples" aria-label="Example searches"><span>Try an example:</span><button data-search-example="JEE Physics teachers in AP or Telangana who applied in the past 30 days">JEE Physics · AP/TS · recent</button><button data-search-example="Teachers who speak Tamil, are in Tamil Nadu and applied in the past 7 days">Tamil teachers · last 7 days</button><button data-search-example="Academic operations candidates in Bengaluru with at least 4 years of experience">Academic ops · Bengaluru · 4+ years</button></div>
+            <details class="fine-tune" id="fineTune">
+              <summary><span><b>Fine-tune with manual filters</b><small>Use only when you want to override or narrow the GPT brief.</small></span><em id="manualFilterCount">No extra filters</em></summary>
+              <div class="fine-tune-body">
+                <div class="filter-grid">
+                  <label><span>Subject / function</span><select id="subjectFilter"><option>All subjects</option><option>Mathematics</option><option>Physics</option><option>English</option><option>Academic Operations</option><option>Performance Marketing</option></select></label>
+                  <label><span>Language</span><select id="languageFilter"><option>All languages</option><option>English</option><option>Hindi</option><option>Malayalam</option><option>Urdu</option><option>Marathi</option><option>Gujarati</option></select></label>
+                  <label><span>Experience</span><select id="experienceFilter"><option value="0">Any experience</option><option value="24">24+ months</option><option value="48">48+ months</option><option value="72">72+ months</option></select></label>
+                  <label><span>Work mode</span><select id="workModeFilter"><option>Any work mode</option><option>Online</option><option>Offline</option><option>Hybrid</option><option>Remote</option></select></label>
+                </div>
+                <div class="advanced-filter-grid">
+                  <label><span>Minimum views</span><select id="minViewsFilter"><option value="0">Any views</option><option value="1">1+ views</option><option value="3">3+ views</option><option value="5">5+ views</option><option value="10">10+ views</option><option value="25">25+ views</option></select></label>
+                  <label><span>Minimum calls</span><select id="minCallsFilter"><option value="0">Any calls</option><option value="1">1+ calls</option><option value="2">2+ calls</option><option value="3">3+ calls</option><option value="5">5+ calls</option></select></label>
+                  <label><span>Latest application</span><select id="maxAgeFilter"><option value="0">Any date</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 6 months</option><option value="365">Last 12 months</option></select></label>
+                  <label><span>Freshness decay</span><select id="freshnessFilter"><option value="1:120">Balanced · 120 days</option><option value="1:365">Gentle · 365 days</option><option value="2:30">Strong · 30 days</option><option value="0:0">Off · relevance only</option></select></label>
+                </div>
+                <p>Freshness uses the candidate's latest application across every connected form. Earlier applications remain in profile history.</p>
+                <button id="clearFilters" class="filter-clear">Clear all filters</button>
               </div>
-              <p>Freshness uses the candidate's latest application across every connected form. Earlier applications remain in their profile history.</p>
             </details>
-            <label class="evidence-toggle"><input type="checkbox" id="includeClaims"><span><b>Include unverified form claims</b><small>Off by default when résumé evidence is available</small></span></label>
+            <div class="search-panel-footer"><p><b>Must match</b> filters the list. <b>Nice to have</b> improves ranking. Exclusions appear only when you ask for them.</p><label class="evidence-toggle"><input type="checkbox" id="includeClaims"><span><b>Include unverified form claims</b><small>Off when résumé evidence is available</small></span></label></div>
           </section>
 
           <div class="understood" id="understood" aria-live="polite"></div>

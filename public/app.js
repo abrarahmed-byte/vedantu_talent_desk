@@ -185,29 +185,49 @@ function renderSearchPlan(plan = state.searchPlan, criteria = state.searchCriter
     return;
   }
   const groups = [
-    ["required", "Required", "must match"],
-    ["preferred", "Preferred", "ranking boost only"],
-    ["excluded", "Excluded", "must not match"],
+    ["required", "Must match", "filters the list"],
+    ["preferred", "Nice to have", "improves ranking"],
+    ["excluded", "Exclude", "removes profiles"],
   ].map(([importance, label, meaning]) => {
     const items = (criteria || []).filter((item) => item.importance === importance);
     const chips = items.map((item) => `<button class="criteria-chip ${importance}" data-plan-importance="${importance}" data-plan-field="${escapeHtml(item.field)}" data-plan-value="${escapeHtml(item.value)}" title="Remove this ${importance} criterion">${escapeHtml(item.label)} <span>&times;</span></button>`).join("");
-    return `<div class="criteria-group ${importance}"><b>${label}<small>${meaning}</small></b><div>${chips || `<span class="criteria-none">None</span>`}</div></div>`;
-  }).join("");
-  const modeLabel = mode === "openai" ? "GPT interpreted" : mode === "ai" ? "AI interpreted" : mode === "fallback" ? "Fast fallback" : "Search plan";
+    return items.length ? `<div class="criteria-group ${importance}"><b>${label}<small>${meaning}</small></b><div>${chips}</div></div>` : "";
+  }).filter(Boolean).join("");
+  const modeLabel = mode === "openai" ? "GPT search brief" : mode === "ai" ? "AI search brief" : mode === "fallback" ? "Fast search brief" : "Search brief";
   const modelLabel = plan.planner?.provider === "openai" && plan.planner?.model ? plan.planner.model.replaceAll("-", " ") : "";
-  const verificationLabel = plan.grounded ? `${modelLabel ? `${modelLabel} · ` : ""}searchable fields checked` : `${Math.round((Number(plan.confidence) || 0) * 100)}% confidence`;
+  const verificationLabel = plan.grounded ? `${modelLabel || "Planner"} · grounded` : `${Math.round((Number(plan.confidence) || 0) * 100)}% confidence`;
   const notices = (Array.isArray(plan.notices) ? plan.notices : [])
     .map((notice) => `<div class="plan-notice"><b>Ignored safely</b><span>${escapeHtml(notice)}</span></div>`).join("");
+  const filterCount = (criteria || []).length;
   panel.classList.add("show");
   panel.classList.remove("planning");
-  panel.innerHTML = `<div class="understood-heading"><span>&#10022;</span><div><b>${escapeHtml(modeLabel)}</b><p>${escapeHtml(plan.interpretation || "Search criteria prepared")}</p></div><em>${escapeHtml(verificationLabel)}</em></div>${notices}${groups}<small>${warning ? `${escapeHtml(warning)} ` : ""}Required filters the list. Preferred changes ranking only. Excluded removes profiles and is used only when your request explicitly says not, exclude, without or similar.</small>`;
+  panel.innerHTML = `<div class="search-brief-heading"><div class="brief-identity"><span>&#10022;</span><div><b>${escapeHtml(modeLabel)}</b><p>${escapeHtml(plan.interpretation || "Search criteria prepared")}</p></div></div><div class="brief-actions"><em>${escapeHtml(verificationLabel)}</em><button class="brief-edit" id="editSearchFilters">Fine-tune</button></div></div>${notices}<div class="brief-groups">${groups}</div><div class="brief-footer"><b>${filterCount} active filter${filterCount === 1 ? "" : "s"}</b><small>${warning ? `${escapeHtml(warning)} ` : ""}Click &times; to remove a filter. GPT only uses fields this repository can search.</small></div>`;
   panel.querySelectorAll("[data-plan-field]").forEach((button) => button.onclick = () => removeSearchCriterion(button.dataset.planImportance, button.dataset.planField, button.dataset.planValue));
+  $("editSearchFilters").onclick = () => {
+    $("fineTune").open = true;
+    $("fineTune").scrollIntoView({ behavior: "smooth", block: "center" });
+  };
 }
 
 function showSearchProgress(message) {
   const panel = $("understood");
   panel.classList.add("show", "planning");
   panel.innerHTML = `<div class="understood-heading"><span class="ai-thinking">&#10022;</span><div><b>Understanding your request</b><p>${escapeHtml(message)}</p></div><em>AI planner</em></div><div class="plan-progress"><i></i></div>`;
+}
+
+function updateManualFilterSummary() {
+  const active = [
+    $("subjectFilter").value !== "All subjects",
+    $("languageFilter").value !== "All languages",
+    $("experienceFilter").value !== "0",
+    $("workModeFilter").value !== "Any work mode",
+    $("minViewsFilter").value !== "0",
+    $("minCallsFilter").value !== "0",
+    $("maxAgeFilter").value !== "0",
+    $("freshnessFilter").value !== "1:120",
+    $("includeClaims").checked,
+  ].filter(Boolean).length;
+  $("manualFilterCount").textContent = active ? `${active} active` : "No extra filters";
 }
 
 function removeSearchCriterion(importance, field, value) {
@@ -365,7 +385,7 @@ async function runSearch(logSearch = true, page = 1) {
     $("exportResults").disabled = true;
   } finally {
     $("searchButton").disabled = false;
-    $("searchButton").textContent = "Ask AI to find →";
+    $("searchButton").textContent = "Find candidates →";
   }
 }
 
@@ -533,6 +553,8 @@ function clearFilters() {
   state.searchPlanQuery = "";
   state.searchPlanMode = "";
   state.searchCriteria = [];
+  $("fineTune").open = false;
+  updateManualFilterSummary();
   renderSearchPlan(null);
   runSearch(false);
 }
@@ -1084,9 +1106,14 @@ document.querySelectorAll("[data-track]").forEach((button) => button.onclick = (
 $("searchButton").onclick = () => runSearch(true);
 $("exportResults").onclick = downloadSearchResultsPaged;
 $("searchInput").addEventListener("keydown", (event) => { if (event.key === "Enter") runSearch(true); });
-["subjectFilter", "languageFilter", "experienceFilter", "workModeFilter", "minViewsFilter", "minCallsFilter", "maxAgeFilter", "freshnessFilter"].forEach((id) => $(id).addEventListener("change", () => runSearch(false, 1)));
-$("includeClaims").addEventListener("change", () => runSearch(false));
+["subjectFilter", "languageFilter", "experienceFilter", "workModeFilter", "minViewsFilter", "minCallsFilter", "maxAgeFilter", "freshnessFilter"].forEach((id) => $(id).addEventListener("change", () => { updateManualFilterSummary(); runSearch(false, 1); }));
+$("includeClaims").addEventListener("change", () => { updateManualFilterSummary(); runSearch(false); });
+document.querySelectorAll("[data-search-example]").forEach((button) => button.addEventListener("click", () => {
+  $("searchInput").value = button.dataset.searchExample;
+  runSearch(true, 1);
+}));
 $("clearFilters").onclick = clearFilters;
+updateManualFilterSummary();
 $("refreshMeta").onclick = () => loadMeta().then(() => toast("Repository health refreshed"));
 $("refreshActivity").onclick = () => loadMeta().then(() => toast("Activity log refreshed"));
 $("refreshSuperadmin").onclick = () => loadSuperadmin(state.superadminPage).then(() => toast("Superadmin reports refreshed"));

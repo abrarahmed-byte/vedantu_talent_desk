@@ -285,7 +285,7 @@ function explicitCounters(query) {
 
 function explicitMaximumAgeDays(query) {
   const value = normalized(query);
-  const match = value.match(/\b(?:last|past|within)\s+(\d+)\s+(days?|weeks?|months?|years?)\b/);
+  const match = value.match(/\b(?:applied\s+)?(?:in\s+)?(?:the\s+)?(?:last|past|previous|within)\s+(\d+)\s+(days?|weeks?|months?|years?)\b/);
   if (!match) return 0;
   const amount = integer(match[1], 0, 3650);
   const unit = match[2];
@@ -308,10 +308,10 @@ function planInterpretation(plan, query) {
   const preferred = labels("preferred");
   const excluded = labels("excluded");
   const parts = [];
-  if (required.length) parts.push(`Must match: ${required.join(", ")}`);
-  if (preferred.length) parts.push(`Ranking preference: ${preferred.join(", ")}`);
-  parts.push(excluded.length ? `Must exclude: ${excluded.join(", ")}` : "No exclusions");
-  return text(parts.join(". ") || `Search for ${query}`, 360);
+  if (required.length) parts.push(`Searching for ${required.join(" · ")}`);
+  if (preferred.length) parts.push(`Prefer ${preferred.join(" · ")}`);
+  if (excluded.length) parts.push(`Exclude ${excluded.join(" · ")}`);
+  return text(parts.join(". ") || `Search across all profiles for ${query}`, 360);
 }
 
 export function groundSearchPlan(value = {}, query = "", options = {}) {

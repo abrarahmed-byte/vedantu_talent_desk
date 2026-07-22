@@ -108,6 +108,14 @@ test("natural grammar is removed and JEE or NEET remains an alternative", () => 
   assert.deepEqual(intent.keywords, []);
 });
 
+test("date grammar and conjunctions do not become resume keywords", () => {
+  const intent = parseSearchIntent("Teachers who can speak Tamil but in Tamil Nadu and applied in the past 7 days");
+  assert.equal(intent.track, "Teacher");
+  assert.deepEqual(intent.locations, ["Tamil Nadu"]);
+  assert.deepEqual(intent.languages, ["Tamil"]);
+  assert.deepEqual(intent.keywords, []);
+});
+
 test("either JEE or NEET can satisfy an explicitly alternative exam request", () => {
   const intent = parseSearchIntent("JEE or NEET Teacher from Tamil Nadu who speaks Tamil and teaches Bio");
   const base = {
