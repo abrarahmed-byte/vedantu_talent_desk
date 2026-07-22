@@ -14,6 +14,14 @@ import { enqueueAiBatch, getAiMeta, processAiEnrichment, profileClassification, 
 import { EXPERIENCE_FILTERS, languageFilterValues, subjectFilterTerms, subjectFilterValues, workModeFilterValues } from "./filters.js";
 import { exportSuperadminData, getSuperadminCandidate, getSuperadminDashboard, updateSuperadminCandidate } from "./superadmin.js";
 import { storeConnectorSecret } from "./connector-secret.js";
+import {
+  createAiSearchPlan,
+  describeSearchPlan,
+  fallbackSearchPlan,
+  parseClientSearchPlan,
+  scoreSearchPlanPreferences,
+  searchPlanToIntent,
+} from "./query-planner.js";
 
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
@@ -103,7 +111,7 @@ async function repositoryFilters(env) {
   };
 }
 
-function candidateResponse(row, score) {
+function candidateResponse(row, score, searchFit = null) {
   let details = {};
   let aiProfile = null;
   try { details = JSON.parse(row.standardized_json || "{}"); } catch { details = {}; }
@@ -131,8 +139,34 @@ function candidateResponse(row, score) {
     classification_rationale: classification.rationale,
     classification_evidence: classification.evidence,
     classification_disagrees: classification.disagreesWithSource,
+    match_reasons: searchFit?.reasons || [],
+    missing_preferences: searchFit?.missing || [],
     match_percent: score,
   };
+}
+
+async function getSearchPlan(request, env) {
+  const started = Date.now();
+  const payload = await request.json().catch(() => ({}));
+  const query = clean(payload.query, 500);
+  if (!query) {
+    const plan = fallbackSearchPlan("");
+    return json({ plan, criteria: [], mode: "manual", responseTimeMs: Date.now() - started });
+  }
+  try {
+    const plan = await createAiSearchPlan(env, query);
+    return json({ plan, criteria: describeSearchPlan(plan), mode: "ai", responseTimeMs: Date.now() - started });
+  } catch (error) {
+    const plan = fallbackSearchPlan(query);
+    return json({
+      plan,
+      criteria: describeSearchPlan(plan),
+      mode: "fallback",
+      warning: "AI interpretation was temporarily unavailable, so the current indexed search was used.",
+      responseTimeMs: Date.now() - started,
+      diagnostic: env.ENVIRONMENT === "development" ? clean(error instanceof Error ? error.message : error, 300) : undefined,
+    });
+  }
 }
 
 async function getCandidates(request, env) {
@@ -153,7 +187,11 @@ async function getCandidates(request, env) {
   const pageSize = Math.max(10, Math.min(100, Math.round(Number(url.searchParams.get("pageSize")) || 40)));
   const offset = (page - 1) * pageSize;
   const includeClaims = url.searchParams.get("includeClaims") === "1";
-  const intent = parseSearchIntent(query);
+  const clientPlan = clean(url.searchParams.get("plan"), 6000);
+  const searchPlan = clientPlan ? parseClientSearchPlan(clientPlan, query) : fallbackSearchPlan(query);
+  const intent = clientPlan ? searchPlanToIntent(searchPlan, query) : parseSearchIntent(query);
+  const required = searchPlan.required;
+  const excluded = searchPlan.excluded;
   const conditions = [];
   const bindings = [];
   const addLikeAny = (column, terms) => {
@@ -171,6 +209,13 @@ async function getCandidates(request, env) {
       AND f.verification_status IN ${statuses} AND (${usable.map(() => "lower(f.normalized_value) LIKE ?").join(" OR ")})
     ))`);
     bindings.push(category, ...usable.map((term) => `%${String(term).toLowerCase()}%`));
+  };
+  const addNotLikeAny = (column, terms) => {
+    const usable = [...new Set((terms || []).filter(Boolean))].slice(0, 16);
+    for (const term of usable) {
+      conditions.push(`lower(${column}) NOT LIKE ?`);
+      bindings.push(`%${String(term).toLowerCase()}%`);
+    }
   };
   const effectiveTrack = track && track !== "All" ? track : intent.track !== "All" ? intent.track : "";
   if (effectiveTrack) {
@@ -211,15 +256,39 @@ async function getCandidates(request, env) {
     bindings.push(`%${keyword}%`);
   }
   if (intent.grades.length) addLikeAny("c.search_text", [Math.min(...intent.grades), Math.max(...intent.grades)]);
-  if (workMode === "Online / Remote") conditions.push("(lower(c.work_mode) LIKE '%online%' OR lower(c.work_mode) LIKE '%remote%')");
-  else if (workMode === "Offline / On-site") conditions.push("(lower(c.work_mode) LIKE '%offline%' OR lower(c.work_mode) LIKE '%on-site%' OR lower(c.work_mode) LIKE '%onsite%')");
-  else if (workMode && workMode !== "Any work mode") { conditions.push("lower(c.work_mode) LIKE ?"); bindings.push(`%${workMode.toLowerCase()}%`); }
+  const effectiveWorkMode = workMode && workMode !== "Any work mode" ? workMode : required.work_mode;
+  if (effectiveWorkMode === "Online / Remote") conditions.push("(lower(c.work_mode) LIKE '%online%' OR lower(c.work_mode) LIKE '%remote%')");
+  else if (effectiveWorkMode === "Offline / On-site") conditions.push("(lower(c.work_mode) LIKE '%offline%' OR lower(c.work_mode) LIKE '%on-site%' OR lower(c.work_mode) LIKE '%onsite%')");
+  else if (effectiveWorkMode) { conditions.push("lower(c.work_mode) LIKE ?"); bindings.push(`%${effectiveWorkMode.toLowerCase()}%`); }
   const effectiveExperience = Math.max(minimumExperience, intent.minimumExperienceMonths || 0);
   if (effectiveExperience) { conditions.push("c.experience_months >= ?"); bindings.push(effectiveExperience); }
-  if (minimumViews) { conditions.push("c.view_count >= ?"); bindings.push(minimumViews); }
-  if (minimumCalls) { conditions.push("c.call_count >= ?"); bindings.push(minimumCalls); }
-  if (maximumAgeDays) { conditions.push("c.applied_at >= datetime('now', ?)"); bindings.push(`-${maximumAgeDays} days`); }
-  const ftsQuery = buildFtsQuery(query);
+  const effectiveMinimumViews = Math.max(minimumViews, required.minimum_views || 0);
+  const effectiveMinimumCalls = Math.max(minimumCalls, required.minimum_calls || 0);
+  if (effectiveMinimumViews) { conditions.push("c.view_count >= ?"); bindings.push(effectiveMinimumViews); }
+  if (effectiveMinimumCalls) { conditions.push("c.call_count >= ?"); bindings.push(effectiveMinimumCalls); }
+  const planMaximumCalls = required.maximum_calls >= 0 ? required.maximum_calls : excluded.maximum_calls;
+  if (planMaximumCalls >= 0) { conditions.push("c.call_count <= ?"); bindings.push(planMaximumCalls); }
+  const ageOptions = [maximumAgeDays, required.maximum_age_days].filter((value) => Number(value) > 0);
+  const effectiveMaximumAgeDays = ageOptions.length ? Math.min(...ageOptions) : 0;
+  if (effectiveMaximumAgeDays) { conditions.push("c.applied_at >= datetime('now', ?)"); bindings.push(`-${effectiveMaximumAgeDays} days`); }
+  if (required.employment_statuses.length) {
+    conditions.push(`c.employment_status IN (${required.employment_statuses.map(() => "?").join(",")})`);
+    bindings.push(...required.employment_statuses);
+  }
+  if (excluded.track !== "All") { conditions.push("c.track <> ?"); bindings.push(excluded.track); }
+  addNotLikeAny("c.search_text", [...excluded.subjects, ...excluded.exams, ...excluded.languages, ...excluded.keywords]);
+  if (excluded.locations.length) {
+    const terms = locationSearchTerms(excluded.locations).slice(0, 16);
+    for (const term of terms) {
+      conditions.push("(lower(c.city) NOT LIKE ? AND lower(c.state) NOT LIKE ?)");
+      bindings.push(`%${term}%`, `%${term}%`);
+    }
+  }
+  if (excluded.employment_statuses.length) {
+    conditions.push(`c.employment_status NOT IN (${excluded.employment_statuses.map(() => "?").join(",")})`);
+    bindings.push(...excluded.employment_statuses);
+  }
+  const ftsQuery = buildFtsQuery(clientPlan ? searchPlan.semantic_query : query);
   const execute = async (withFts) => {
     const allConditions = [...conditions];
     const allBindings = [...bindings];
@@ -243,9 +312,13 @@ async function getCandidates(request, env) {
     ]);
     return { total: Number(totalRow?.count || 0), rows: rows.results || [] };
   };
-  const result = await execute(Boolean(ftsQuery));
-  const scored = result.rows.map((row) => candidateResponse(row,
-    scoreCandidate(row, query, intent, Date.now(), { freshnessDecayDays, freshnessWeight })));
+  let result = await execute(Boolean(ftsQuery && !clientPlan));
+  if (!result.total && ftsQuery && !clientPlan) result = await execute(false);
+  const scored = result.rows.map((row) => {
+    const fit = scoreSearchPlanPreferences(row, searchPlan);
+    const base = scoreCandidate(row, query, intent, Date.now(), { freshnessDecayDays, freshnessWeight });
+    return candidateResponse(row, Math.min(99, base + fit.bonus), fit);
+  }).sort((left, right) => right.match_percent - left.match_percent || String(right.applied_at).localeCompare(String(left.applied_at)));
   const evaluatedRow = await env.DB.prepare("SELECT COUNT(*) AS count FROM candidates").first();
   return json({
     candidates: scored,
@@ -254,9 +327,11 @@ async function getCandidates(request, env) {
     page,
     pageSize,
     totalPages: Math.max(1, Math.ceil(result.total / pageSize)),
-    understoodAs: describeIntent(intent),
+    understoodAs: clientPlan ? searchPlan.interpretation : describeIntent(intent),
+    searchPlan,
+    criteria: describeSearchPlan(searchPlan),
     responseTimeMs: Date.now() - started,
-    mode: includeClaims ? "Entire repository · AI evidence + claims" : "Entire repository · verified résumé evidence preferred",
+    mode: `${clientPlan ? "AI-planned search" : "Indexed search"} · ${includeClaims ? "AI evidence + claims" : "verified résumé evidence preferred"}`,
   });
 }
 
@@ -573,6 +648,7 @@ async function routeApi(request, env, ctx) {
     return json({ ok: true, database: "vedantu_talent_desk_db", protected: user.protected, ...result });
   }
   if (request.method === "GET" && url.pathname === "/api/meta") return getMeta(env, user);
+  if (request.method === "POST" && url.pathname === "/api/search/plan") return getSearchPlan(request, env);
   if (request.method === "GET" && url.pathname === "/api/candidates") return getCandidates(request, env);
   if (request.method === "GET" && url.pathname === "/api/superadmin") return getSuperadminDashboard(request, env, user);
   if (request.method === "GET" && url.pathname === "/api/superadmin/export") return exportSuperadminData(request, env, user);

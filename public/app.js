@@ -7,6 +7,10 @@ const state = {
   searchTotal: 0,
   searchPageSize: 40,
   searchTotalPages: 1,
+  searchPlan: null,
+  searchPlanQuery: "",
+  searchPlanMode: "",
+  searchCriteria: [],
   meta: null,
   selected: null,
   toastTimer: null,
@@ -173,6 +177,50 @@ function aiBadge(candidate) {
   return `<span class="ai-badge verified">✦ ${supported} resume-backed</span>${claims ? `<span class="ai-badge claim">${claims} claim-only</span>` : ""}`;
 }
 
+function renderSearchPlan(plan = state.searchPlan, criteria = state.searchCriteria, mode = state.searchPlanMode, warning = "") {
+  const panel = $("understood");
+  if (!plan) {
+    panel.classList.remove("show", "planning");
+    panel.innerHTML = "";
+    return;
+  }
+  const groups = [
+    ["required", "Required"],
+    ["preferred", "Preferred"],
+    ["excluded", "Excluded"],
+  ].map(([importance, label]) => {
+    const items = (criteria || []).filter((item) => item.importance === importance);
+    if (!items.length) return "";
+    return `<div class="criteria-group"><b>${label}</b><div>${items.map((item) => `<button class="criteria-chip ${importance}" data-plan-importance="${importance}" data-plan-field="${escapeHtml(item.field)}" data-plan-value="${escapeHtml(item.value)}" title="Remove this criterion">${escapeHtml(item.label)} <span>&times;</span></button>`).join("")}</div></div>`;
+  }).join("");
+  const modeLabel = mode === "ai" ? "AI interpreted" : mode === "fallback" ? "Fast fallback" : "Search plan";
+  panel.classList.add("show");
+  panel.classList.remove("planning");
+  panel.innerHTML = `<div class="understood-heading"><span>&#10022;</span><div><b>${escapeHtml(modeLabel)}</b><p>${escapeHtml(plan.interpretation || "Search criteria prepared")}</p></div><em>${Math.round((Number(plan.confidence) || 0) * 100)}% confidence</em></div>${groups}<small>${warning ? `${escapeHtml(warning)} ` : ""}Click any criterion to remove it, then the results update without asking AI again.</small>`;
+  panel.querySelectorAll("[data-plan-field]").forEach((button) => button.onclick = () => removeSearchCriterion(button.dataset.planImportance, button.dataset.planField, button.dataset.planValue));
+}
+
+function showSearchProgress(message) {
+  const panel = $("understood");
+  panel.classList.add("show", "planning");
+  panel.innerHTML = `<div class="understood-heading"><span class="ai-thinking">&#10022;</span><div><b>Understanding your request</b><p>${escapeHtml(message)}</p></div><em>AI planner</em></div><div class="plan-progress"><i></i></div>`;
+}
+
+function removeSearchCriterion(importance, field, value) {
+  if (!state.searchPlan) return;
+  if (field === "freshest_first") state.searchPlan.freshest_first = false;
+  else {
+    const bucket = state.searchPlan[importance];
+    if (!bucket) return;
+    if (Array.isArray(bucket[field])) bucket[field] = bucket[field].filter((item) => String(item) !== String(value));
+    else if (field === "track") bucket[field] = "All";
+    else if (field === "work_mode") bucket[field] = "";
+    else if (field === "maximum_calls") bucket[field] = -1;
+    else bucket[field] = 0;
+  }
+  runSearch(false, 1);
+}
+
 function profileTypeInfo(candidate) {
   const recommendation = candidate.recommended_track || "";
   const effective = candidate.effective_track || candidate.track || "Unclear";
@@ -209,6 +257,7 @@ function renderCandidates() {
         <div class="profile-labels"><span class="track-pill ${escapeHtml(profileType.css)}">${escapeHtml(profileType.label)}</span>${aiBadge(candidate)}</div>
         <b>${escapeHtml(candidate.subject_display || candidate.role)}</b>
         <span>${profileType.effective === "Teacher" ? "Grades / levels: " : "Focus: "}${escapeHtml(candidate.grades_display || candidate.role)}</span>
+        ${(candidate.match_reasons || []).length ? `<small class="match-reasons">AI preference match: ${escapeHtml(candidate.match_reasons.slice(0, 2).join(" / "))}</small>` : ""}
         <em class="employment-pill ${employmentClass(candidate.employment_status)}">${escapeHtml(candidate.employment_status)}${escapeHtml(hires)}</em>
       </div>
       <div class="engagement">
@@ -252,9 +301,29 @@ function renderSearchPager() {
 }
 
 async function runSearch(logSearch = true, page = 1) {
+  const query = $("searchInput").value.trim();
+  const needsPlan = Boolean(query) && (!state.searchPlan || state.searchPlanQuery !== query);
+  if (needsPlan) {
+    $("searchButton").disabled = true;
+    $("searchButton").textContent = "Understanding…";
+    showSearchProgress("Identifying required, preferred and excluded criteria…");
+    try {
+      const planned = await api("/api/search/plan", { method: "POST", body: JSON.stringify({ query }) });
+      state.searchPlan = planned.plan;
+      state.searchPlanQuery = query;
+      state.searchPlanMode = planned.mode;
+      state.searchCriteria = planned.criteria || [];
+      renderSearchPlan(state.searchPlan, state.searchCriteria, state.searchPlanMode, planned.warning || "");
+    } catch (error) {
+      state.searchPlan = null;
+      state.searchPlanQuery = "";
+      state.searchPlanMode = "fallback";
+      toast(`AI planner unavailable: ${error.message}`);
+    }
+  }
   const [freshnessWeight, freshnessDecayDays] = $("freshnessFilter").value.split(":");
   const params = new URLSearchParams({
-    q: $("searchInput").value.trim(),
+    q: query,
     track: state.track,
     subject: $("subjectFilter").value,
     language: $("languageFilter").value,
@@ -269,8 +338,9 @@ async function runSearch(logSearch = true, page = 1) {
     pageSize: String(state.searchPageSize),
     includeClaims: $("includeClaims").checked ? "1" : "0",
   });
+  if (state.searchPlan) params.set("plan", JSON.stringify(state.searchPlan));
   $("searchButton").disabled = true;
-  $("searchButton").textContent = "Searching…";
+  $("searchButton").textContent = "Searching profiles…";
   try {
     const result = await api(`/api/candidates?${params}`);
     state.candidates = result.candidates || [];
@@ -290,15 +360,21 @@ async function runSearch(logSearch = true, page = 1) {
       || $("experienceFilter").value !== "0" || $("workModeFilter").value !== "Any work mode"
       || $("minViewsFilter").value !== "0" || $("minCallsFilter").value !== "0"
       || $("maxAgeFilter").value !== "0" || $("freshnessFilter").value !== "1:120";
-    $("understood").classList.toggle("show", hasSearchContext);
-    if (hasSearchContext) $("understood").querySelector("p").textContent = `Understood as: ${result.understoodAs}`;
+    if (state.searchPlan) {
+      state.searchPlan = result.searchPlan || state.searchPlan;
+      state.searchCriteria = result.criteria || state.searchCriteria;
+      renderSearchPlan();
+    } else {
+      $("understood").classList.toggle("show", hasSearchContext);
+      if (hasSearchContext) $("understood").innerHTML = `<div class="understood-heading"><span>⌕</span><div><b>Manual filters</b><p>${escapeHtml(result.understoodAs)}</p></div><em>Indexed search</em></div>`;
+    }
     if (logSearch && $("searchInput").value.trim()) api("/api/searches", { method: "POST", body: JSON.stringify({ query: $("searchInput").value.trim() }) }).catch(() => {});
   } catch (error) {
     $("candidateList").innerHTML = `<div class="empty-state"><h3>The repository could not be reached</h3><p>${escapeHtml(error.message)}</p></div>`;
     $("resultSummary").textContent = "Database check required";
   } finally {
     $("searchButton").disabled = false;
-    $("searchButton").textContent = "Find matches →";
+    $("searchButton").textContent = "Ask AI to find →";
   }
 }
 
@@ -315,6 +391,11 @@ function clearFilters() {
   $("maxAgeFilter").value = "0";
   $("freshnessFilter").value = "1:120";
   $("includeClaims").checked = false;
+  state.searchPlan = null;
+  state.searchPlanQuery = "";
+  state.searchPlanMode = "";
+  state.searchCriteria = [];
+  renderSearchPlan(null);
   runSearch(false);
 }
 

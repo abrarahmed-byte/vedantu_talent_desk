@@ -73,8 +73,9 @@
           </div>
 
           <section class="search-panel">
-            <label for="searchInput">What does the ideal profile look like?</label>
-            <div class="search-box"><span>⌕</span><input id="searchInput" placeholder="Try: JEE Physics teacher with 5+ years of classroom experience" autocomplete="off"><button id="searchButton" class="primary-button">Find matches →</button></div>
+            <label for="searchInput">Describe the candidate you need in your own words</label>
+            <div class="search-box"><span>⌕</span><input id="searchInput" placeholder="Try: Recent JEE Physics teachers in Telangana, preferably Hindi-speaking, who we have not called" autocomplete="off"><button id="searchButton" class="primary-button">Ask AI to find →</button></div>
+            <p class="search-helper">AI separates requirements, preferences and exclusions. You can review or remove any interpreted criterion before continuing.</p>
             <div class="filter-grid">
               <label><span>Subject / function</span><select id="subjectFilter"><option>All subjects</option><option>Mathematics</option><option>Physics</option><option>English</option><option>Academic Operations</option><option>Performance Marketing</option></select></label>
               <label><span>Language</span><select id="languageFilter"><option>All languages</option><option>English</option><option>Hindi</option><option>Malayalam</option><option>Urdu</option><option>Marathi</option><option>Gujarati</option></select></label>
@@ -95,7 +96,7 @@
             <label class="evidence-toggle"><input type="checkbox" id="includeClaims"><span><b>Include unverified form claims</b><small>Off by default when résumé evidence is available</small></span></label>
           </section>
 
-          <div class="understood" id="understood"><span>✦</span><p>Search understanding will appear here.</p></div>
+          <div class="understood" id="understood" aria-live="polite"></div>
           <div class="results-heading"><div><h2>Best matching profiles</h2><p id="resultSummary">Loading the repository…</p></div><span class="freshness-note" id="freshnessNote">Relevance first · freshness decay applied</span></div>
           <div class="candidate-list" id="candidateList" aria-live="polite">
             <div class="loading-card"></div><div class="loading-card"></div><div class="loading-card"></div>
