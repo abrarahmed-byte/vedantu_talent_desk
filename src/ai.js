@@ -156,9 +156,9 @@ function model(env) {
   return compactString(env.AI_MODEL || DEFAULT_AI_MODEL, 120);
 }
 
-async function openAiFetch(env, path, options = {}) {
+export async function openAiFetch(env, path, options = {}) {
   if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured in Cloudflare");
-  const response = await fetch(`${OPENAI_BASE_URL}${path}`, {
+  const response = await (env.OPENAI_FETCH || fetch)(`${OPENAI_BASE_URL}${path}`, {
     ...options,
     headers: {
       authorization: `Bearer ${env.OPENAI_API_KEY}`,

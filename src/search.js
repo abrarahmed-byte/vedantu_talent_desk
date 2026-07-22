@@ -6,6 +6,7 @@ const STOP_WORDS = new Set([
   "ideally", "bonus", "must", "required", "exclude", "excluding", "without", "not", "no", "previous",
   "call", "calls", "called", "contact", "contacted", "view", "views", "teachers",
   "speak", "speaks", "speaking", "teach", "teaches", "taught", "dont", "include", "including",
+  "region", "regions", "area", "areas",
 ]);
 
 const SYNONYMS = {
@@ -40,7 +41,7 @@ const SUBJECT_TERMS = [
 const LANGUAGES = ["English", "Hindi", "Malayalam", "Urdu", "Marathi", "Gujarati", "Tamil", "Telugu", "Kannada", "Bengali"];
 
 const LOCATION_GROUPS = [
-  { label: "Andhra Pradesh", terms: ["andhra pradesh"] },
+  { label: "Andhra Pradesh", terms: ["andhra pradesh", "ap"] },
   { label: "Arunachal Pradesh", terms: ["arunachal pradesh"] },
   { label: "Assam", terms: ["assam"] },
   { label: "Bihar", terms: ["bihar"] },
@@ -63,7 +64,7 @@ const LOCATION_GROUPS = [
   { label: "Rajasthan", terms: ["rajasthan"] },
   { label: "Sikkim", terms: ["sikkim"] },
   { label: "Tamil Nadu", terms: ["tamil nadu"] },
-  { label: "Telangana", terms: ["telangana"] },
+  { label: "Telangana", terms: ["telangana", "ts"] },
   { label: "Tripura", terms: ["tripura"] },
   { label: "Uttar Pradesh", terms: ["uttar pradesh"] },
   { label: "Uttarakhand", terms: ["uttarakhand", "uttaranchal"] },
@@ -71,12 +72,12 @@ const LOCATION_GROUPS = [
   { label: "Andaman and Nicobar Islands", terms: ["andaman and nicobar", "andaman nicobar"] },
   { label: "Chandigarh", terms: ["chandigarh"] },
   { label: "Dadra and Nagar Haveli and Daman and Diu", terms: ["dadra and nagar haveli", "daman and diu"] },
-  { label: "Delhi", terms: ["new delhi", "delhi", "nct delhi"] },
+  { label: "Delhi", terms: ["new delhi", "delhi", "nct delhi", "ncr"] },
   { label: "Jammu and Kashmir", terms: ["jammu and kashmir", "jammu kashmir"] },
   { label: "Ladakh", terms: ["ladakh"] },
   { label: "Lakshadweep", terms: ["lakshadweep"] },
   { label: "Puducherry", terms: ["puducherry", "pondicherry"] },
-  { label: "Bengaluru", terms: ["bengaluru", "bangalore"] },
+  { label: "Bengaluru", terms: ["bengaluru", "bangalore", "blr"] },
   { label: "Gurugram", terms: ["gurugram", "gurgaon"] },
   { label: "Kochi", terms: ["kochi", "cochin"] },
   { label: "Mumbai", terms: ["mumbai", "bombay"] },
@@ -88,6 +89,7 @@ const LOCATION_GROUPS = [
   { label: "Vadodara", terms: ["vadodara", "baroda"] },
   { label: "Mysuru", terms: ["mysuru", "mysore"] },
   { label: "Mangaluru", terms: ["mangaluru", "mangalore"] },
+  { label: "Hyderabad", terms: ["hyderabad", "hyd"] },
   ...["Agra", "Ahmedabad", "Amritsar", "Bhopal", "Bhubaneswar", "Coimbatore", "Cuttack", "Dehradun",
     "Faridabad", "Ghaziabad", "Greater Noida", "Guntur", "Guwahati", "Hyderabad", "Indore", "Jaipur",
     "Jamshedpur", "Kanpur", "Lucknow", "Ludhiana", "Madurai", "Meerut", "Mohali", "Nagpur", "Nashik",
@@ -223,6 +225,7 @@ export function parseSearchIntent(query) {
     examMatchMode: examMatchMode(query, exams),
     languages: findKnown(query, LANGUAGES),
     locations: unique(locations),
+    locationMatchMode: locations.length > 1 ? "any" : "all",
     pincodes,
     grades: unique(grades),
     minimumExperienceMonths: experienceMatch ? Number(experienceMatch[1]) * 12 : 0,
@@ -297,8 +300,11 @@ export function matchesMandatoryIntent(candidate, intent) {
 export function scoreCandidate(candidate, query, intent, now = Date.now(), options = {}) {
   const haystack = String(candidate.search_text || "").toLowerCase();
   const queryTokens = intent.tokens || expandTokens(tokenize(query));
-  const matchedTokens = queryTokens.filter((token) => haystack.includes(token));
-  const textScore = queryTokens.length ? Math.round(matchedTokens.length / queryTokens.length * 20) : 16;
+  const suppliedHits = Number(candidate.search_token_hits);
+  const matchedCount = Number.isFinite(suppliedHits)
+    ? Math.max(0, Math.min(queryTokens.length, suppliedHits))
+    : queryTokens.filter((token) => haystack.includes(token)).length;
+  const textScore = queryTokens.length ? Math.round(matchedCount / queryTokens.length * 20) : 16;
   let score = 30 + textScore;
   if (intent.track !== "All") score += 6;
   if (intent.subjects.length) score += 16;

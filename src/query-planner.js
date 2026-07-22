@@ -1,6 +1,7 @@
 import { expandTokens, locationSearchTerms, parseSearchIntent, tokenize } from "./search.js";
+import { extractResponseText, openAiFetch } from "./ai.js";
 
-export const DEFAULT_SEARCH_MODEL = "@cf/meta/llama-3.2-3b-instruct";
+export const DEFAULT_SEARCH_MODEL = "gpt-5-nano";
 
 const PLAN_BUCKET_SCHEMA = {
   type: "object",
@@ -50,6 +51,8 @@ Rules:
 - Every non-empty field must be supported by words in the current user message. Start with every field empty; never reuse details from an earlier request, an example, or a common candidate profile.
 - A criterion may appear in exactly one bucket. Never repeat the same track, subject, exam, location, language, grade, keyword, employment state or work mode across Required, Preferred and Excluded.
 - Preserve alternatives: "JEE or NEET" means either exam may match, not that every candidate must match both.
+- Use only filters this tool can execute: profile track, subject/function, exam, location or pincode, language, grade, experience, work mode, employment status, views, calls, freshness window and searchable row/resume context. Put unsupported but searchable concepts in keywords; never invent a filter.
+- Expand common Indian recruiting abbreviations when the user uses them. Examples: AP -> Andhra Pradesh, TS -> Telangana, NCR -> Delhi NCR, BLR -> Bengaluru, HYD -> Hyderabad.
 - Excluded must stay completely empty unless the current message explicitly says exclude, excluding, without, except, avoid, not, no, do not show or an equivalent negative instruction.
 - A central noun phrase such as "JEE Physics teacher in Telangana" normally makes Teacher, Physics, JEE and Telangana required unless the user weakens it.
 - Translate equivalent concepts into common recruitment terms. Examples: engineering entrance coaching -> JEE; senior secondary -> grades 11 and 12; classroom teaching -> Offline / On-site; online tutor -> Online / Remote.
@@ -130,7 +133,14 @@ export function sanitizeSearchPlan(value = {}, fallbackQuery = "") {
     excluded: sanitizeBucket(value.excluded),
     freshest_first: Boolean(value.freshest_first),
     confidence: Math.max(0, Math.min(1, Number(value.confidence) || 0)),
-    match_modes: { exams: value?.match_modes?.exams === "any" ? "any" : "all" },
+    match_modes: {
+      exams: value?.match_modes?.exams === "any" ? "any" : "all",
+      locations: value?.match_modes?.locations === "any" ? "any" : "all",
+    },
+    planner: {
+      provider: value?.planner?.provider === "openai" ? "openai" : "local",
+      model: text(value?.planner?.model, 120),
+    },
     notices: uniqueStrings(value.notices, 4),
     grounded: Boolean(value.grounded),
     guardrails_applied: Boolean(value.guardrails_applied),
@@ -157,7 +167,11 @@ export function fallbackSearchPlan(query) {
     excluded: emptyBucket(),
     freshest_first: intent.freshestFirst,
     confidence: 0,
-    match_modes: { exams: intent.examMatchMode === "any" ? "any" : "all" },
+    match_modes: {
+      exams: intent.examMatchMode === "any" ? "any" : "all",
+      locations: intent.locationMatchMode === "any" ? "any" : "all",
+    },
+    planner: { provider: "local", model: "" },
     notices: protectedCriteriaNotices(query),
     grounded: true,
     guardrails_applied: true,
@@ -310,7 +324,11 @@ export function groundSearchPlan(value = {}, query = "", options = {}) {
     required: emptyBucket(), preferred: emptyBucket(), excluded: emptyBucket(),
     freshest_first: /\b(?:fresh|latest|newest|recent)\b/i.test(query) && (addMissing || safe.freshest_first),
     confidence: safe.confidence,
-    match_modes: { exams: parsed.examMatchMode === "any" ? "any" : "all" },
+    match_modes: {
+      exams: parsed.examMatchMode === "any" ? "any" : "all",
+      locations: parsed.locationMatchMode === "any" ? "any" : "all",
+    },
+    planner: safe.planner,
     notices: protectedCriteriaNotices(query),
     grounded: true,
     guardrails_applied: true,
@@ -411,30 +429,29 @@ export function groundSearchPlan(value = {}, query = "", options = {}) {
   return output;
 }
 
-function responseText(result) {
-  if (typeof result?.response === "string") return result.response;
-  if (result?.response && typeof result.response === "object") return JSON.stringify(result.response);
-  if (typeof result === "string") return result;
-  return "";
-}
-
 export async function createAiSearchPlan(env, query) {
-  if (!env?.AI?.run) throw new Error("Cloudflare AI search is not configured");
-  const result = await env.AI.run(env.AI_SEARCH_MODEL || DEFAULT_SEARCH_MODEL, {
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: text(query, 500) },
-    ],
-    response_format: {
-      type: "json_schema",
-      json_schema: { name: "talent_search_plan", strict: true, schema: SEARCH_PLAN_SCHEMA },
-    },
-    temperature: 0,
-    max_tokens: 850,
+  const model = text(env?.AI_SEARCH_MODEL || env?.AI_MODEL || DEFAULT_SEARCH_MODEL, 120);
+  const effort = /^gpt-5(?:$|-mini|-nano|-2025)/.test(model) ? "minimal" : "low";
+  const response = await openAiFetch(env, "/responses", {
+    method: "POST",
+    body: JSON.stringify({
+      model,
+      store: false,
+      input: [
+        { role: "system", content: [{ type: "input_text", text: SYSTEM_PROMPT }] },
+        { role: "user", content: [{ type: "input_text", text: text(query, 500) }] },
+      ],
+      reasoning: { effort },
+      text: { format: { type: "json_schema", name: "talent_search_plan", strict: true, schema: SEARCH_PLAN_SCHEMA } },
+      max_output_tokens: 1800,
+    }),
   });
-  const raw = responseText(result);
-  if (!raw) throw new Error("The AI planner returned an empty response");
-  return groundSearchPlan(JSON.parse(raw), query);
+  const result = await response.json();
+  const raw = extractResponseText(result);
+  if (!raw) throw new Error("OpenAI returned an empty search plan");
+  const plan = groundSearchPlan(JSON.parse(raw), query);
+  plan.planner = { provider: "openai", model };
+  return plan;
 }
 
 export function parseClientSearchPlan(value, query = "") {
@@ -462,6 +479,7 @@ export function searchPlanToIntent(plan, query = "") {
     tokens: expandTokens(tokenize(allWords || query)),
     keywords: required.keywords,
     examMatchMode: plan?.match_modes?.exams === "any" ? "any" : "all",
+    locationMatchMode: plan?.match_modes?.locations === "any" ? "any" : "all",
   };
 }
 
@@ -530,7 +548,9 @@ export function describeSearchPlan(plan) {
     if (bucket.track !== "All") chips.push({ importance, field: "track", value: bucket.track, label: bucket.track });
     for (const [field, label] of Object.entries(labels)) {
       for (const value of bucket[field]) {
-        const fieldLabel = field === "exams" && safe.match_modes.exams === "any" ? "Exam option" : label;
+        const fieldLabel = field === "exams" && safe.match_modes.exams === "any"
+          ? "Exam option"
+          : field === "locations" && safe.match_modes.locations === "any" ? "Location option" : label;
         chips.push({ importance, field, value: String(value), label: `${fieldLabel}: ${value}` });
       }
     }

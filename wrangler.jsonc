@@ -9,7 +9,7 @@
     "AUTH_MODE": "workspace-sso",
     "ALLOW_LOCAL_SOURCE_SYNC": "false",
     "AI_MODEL": "gpt-5-nano",
-    "AI_SEARCH_MODEL": "@cf/meta/llama-3.2-3b-instruct",
+    "AI_SEARCH_MODEL": "gpt-5-nano",
     "AI_BATCH_SIZE": "20",
     "AI_PREPARE_PER_RUN": "4",
     "AI_INGEST_PER_RUN": "4",

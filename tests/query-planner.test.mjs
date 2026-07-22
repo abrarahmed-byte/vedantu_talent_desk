@@ -19,6 +19,19 @@ function bucket(overrides = {}) {
   };
 }
 
+function openAiEnv(result, onRequest = () => {}) {
+  return {
+    OPENAI_API_KEY: "test-key",
+    AI_SEARCH_MODEL: "gpt-5-nano",
+    OPENAI_FETCH: async (_url, options) => {
+      onRequest(JSON.parse(options.body));
+      return new Response(JSON.stringify({
+        output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify(result) }] }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  };
+}
+
 test("fallback keeps the existing parser as a safe rollback path", () => {
   const plan = fallbackSearchPlan("JEE Physics teacher in Telangana with 4 years experience");
   assert.equal(plan.required.track, "Teacher");
@@ -39,14 +52,14 @@ test("AI plan distinguishes required, preferred and excluded criteria", async ()
     freshest_first: true,
     confidence: 0.93,
   };
-  const env = {
-    AI: { run: async (_model, input) => { request = input; return { response: JSON.stringify(raw) }; } },
-  };
+  const env = openAiEnv(raw, (input) => { request = input; });
   const plan = await createAiSearchPlan(env, "JEE Physics in Telangana, prefer Hindi and no previous calls");
   assert.deepEqual(plan.required.subjects, ["Physics"]);
   assert.deepEqual(plan.preferred.languages, ["Hindi"]);
   assert.equal(plan.required.maximum_calls, 0);
-  assert.equal(request.response_format.type, "json_schema");
+  assert.equal(request.model, "gpt-5-nano");
+  assert.equal(request.text.format.type, "json_schema");
+  assert.equal(plan.planner.provider, "openai");
 });
 
 test("client plans are bounded before they affect database search", () => {
@@ -95,7 +108,7 @@ test("AI hallucinations are removed from a Cuemath early-learner search", async 
     freshest_first: true,
     confidence: 0.8,
   };
-  const env = { AI: { run: async () => ({ response: JSON.stringify(hallucinated) }) } };
+  const env = openAiEnv(hallucinated);
   const plan = await createAiSearchPlan(env, "Early learner teachers who have worked in Cuemath");
   assert.equal(plan.required.track, "Teacher");
   assert.deepEqual(plan.required.keywords, ["Cuemath", "early learner"]);
@@ -129,7 +142,7 @@ test("AI plan converts grammar into structured Biology and alternative exams", a
     }),
     preferred: bucket(), excluded: bucket(), freshest_first: false, confidence: 0.94,
   };
-  const env = { AI: { run: async () => ({ response: JSON.stringify(raw) }) } };
+  const env = openAiEnv(raw);
   const plan = await createAiSearchPlan(env, "JEE or NEET Teacher from Tamil Nadu who can speak Tamil and Teaches Bio");
   assert.deepEqual(plan.required.subjects, ["Biology"]);
   assert.deepEqual(plan.required.exams, ["JEE", "NEET UG"]);
@@ -147,7 +160,7 @@ test("protected gender instructions are ignored and explained", async () => {
     required: bucket({ track: "Teacher", subjects: ["Biology"], exams: ["JEE", "NEET UG"], locations: ["Tamil Nadu"], languages: ["Tamil"], keywords: ["speak", "dont", "include"] }),
     preferred: bucket(), excluded: bucket({ keywords: ["female"] }), freshest_first: false, confidence: 0.91,
   };
-  const env = { AI: { run: async () => ({ response: JSON.stringify(raw) }) } };
+  const env = openAiEnv(raw);
   const query = "JEE or NEET Teacher from Tamil Nadu who can speak Tamil and Teaches Bio dont include female";
   const plan = await createAiSearchPlan(env, query);
   assert.deepEqual(plan.required.keywords, []);
@@ -158,4 +171,20 @@ test("protected gender instructions are ignored and explained", async () => {
   const fallback = fallbackSearchPlan(query);
   assert.deepEqual(fallback.required.keywords, []);
   assert.ok(fallback.notices.length > 0);
+});
+
+test("OpenAI interpretation grounds AP/TS to location options the repository can execute", async () => {
+  const raw = {
+    interpretation: "JEE Physics teacher located in Andhra Pradesh or Telangana",
+    semantic_query: "JEE Physics teacher Andhra Pradesh Telangana",
+    required: bucket({ track: "Teacher", subjects: ["Physics"], exams: ["JEE"], locations: ["Andhra Pradesh", "Telangana"] }),
+    preferred: bucket(), excluded: bucket(), freshest_first: false, confidence: 0.96,
+  };
+  const plan = await createAiSearchPlan(openAiEnv(raw), "JEE Physics teacher in AP/TS region");
+  assert.equal(plan.planner.provider, "openai");
+  assert.equal(plan.planner.model, "gpt-5-nano");
+  assert.deepEqual(plan.required.locations, ["Andhra Pradesh", "Telangana"]);
+  assert.equal(plan.match_modes.locations, "any");
+  assert.deepEqual(plan.required.keywords, []);
+  assert.ok(describeSearchPlan(plan).filter((item) => item.field === "locations").every((item) => item.label.startsWith("Location option:")));
 });

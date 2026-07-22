@@ -67,3 +67,44 @@ test("search export creates a real two-sheet XLSX package", () => {
   assert.doesNotMatch(files.get("xl/worksheets/sheet1.xml"), /<f>/);
   assert.match(files.get("xl/worksheets/sheet2.xml"), /Abrar Ahmed/);
 });
+
+async function compressedZipFiles(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const decoder = new TextDecoder();
+  const files = new Map();
+  let offset = 0;
+  while (offset + 4 <= bytes.length && view.getUint32(offset, true) === 0x04034b50) {
+    const method = view.getUint16(offset + 8, true);
+    const size = view.getUint32(offset + 18, true);
+    const nameLength = view.getUint16(offset + 26, true);
+    const extraLength = view.getUint16(offset + 28, true);
+    const nameStart = offset + 30;
+    const dataStart = nameStart + nameLength + extraLength;
+    const name = decoder.decode(bytes.slice(nameStart, nameStart + nameLength));
+    const compressed = bytes.slice(dataStart, dataStart + size);
+    let data = compressed;
+    if (method === 8) {
+      const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+      data = new Uint8Array(await new Response(stream).arrayBuffer());
+    }
+    files.set(name, decoder.decode(data));
+    offset = dataStart + size;
+  }
+  return files;
+}
+
+test("browser export builds and compresses a large workbook outside the Worker", async () => {
+  globalThis.window = {};
+  await import(`../public/export-xlsx.js?test=${Date.now()}`);
+  const repeatedResume = "Physics teacher with classroom experience. ".repeat(250);
+  const rows = Array.from({ length: 1000 }, (_, index) => [index, `Candidate ${index}`, repeatedResume]);
+  const bytes = await window.TalentDeskXlsx.createXlsx([
+    { name: "Search Results", columns: [{ label: "ID" }, { label: "Name" }, { label: "Resume Text" }], rows },
+  ]);
+  assert.equal(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true), 0x04034b50);
+  assert.ok(bytes.byteLength < 2_000_000);
+  const files = await compressedZipFiles(bytes);
+  assert.match(files.get("xl/worksheets/sheet1.xml"), /Candidate 999/);
+  assert.match(files.get("xl/worksheets/sheet1.xml"), /Physics teacher with classroom experience/);
+  delete globalThis.window;
+});

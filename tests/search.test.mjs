@@ -119,6 +119,17 @@ test("either JEE or NEET can satisfy an explicitly alternative exam request", ()
   assert.equal(matchesMandatoryIntent({ ...base, grades_display: "Foundation" }, intent), false);
 });
 
+test("AP/TS recruiting shorthand expands into searchable location options", () => {
+  const intent = parseSearchIntent("JEE Physics teacher in AP/TS region");
+  assert.deepEqual(intent.locations, ["Andhra Pradesh", "Telangana"]);
+  assert.equal(intent.locationMatchMode, "any");
+  assert.deepEqual(intent.keywords, []);
+  const base = { track: "Teacher", subject_display: "Physics", grades_display: "JEE Main", languages_display: "", experience_months: 0 };
+  assert.equal(matchesMandatoryIntent({ ...base, city: "Vijayawada", state: "Andhra Pradesh" }, intent), true);
+  assert.equal(matchesMandatoryIntent({ ...base, city: "Hyderabad", state: "Telangana" }, intent), true);
+  assert.equal(matchesMandatoryIntent({ ...base, city: "Bengaluru", state: "Karnataka" }, intent), false);
+});
+
 test("a Foundation-only Physics profile cannot satisfy a JEE Physics search", () => {
   const intent = parseSearchIntent("JEE Physics");
   const foundationOnly = {

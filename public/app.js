@@ -193,8 +193,9 @@ function renderSearchPlan(plan = state.searchPlan, criteria = state.searchCriter
     const chips = items.map((item) => `<button class="criteria-chip ${importance}" data-plan-importance="${importance}" data-plan-field="${escapeHtml(item.field)}" data-plan-value="${escapeHtml(item.value)}" title="Remove this ${importance} criterion">${escapeHtml(item.label)} <span>&times;</span></button>`).join("");
     return `<div class="criteria-group ${importance}"><b>${label}<small>${meaning}</small></b><div>${chips || `<span class="criteria-none">None</span>`}</div></div>`;
   }).join("");
-  const modeLabel = mode === "ai" ? "AI interpreted" : mode === "fallback" ? "Fast fallback" : "Search plan";
-  const verificationLabel = plan.grounded ? "Checked against your words" : `${Math.round((Number(plan.confidence) || 0) * 100)}% confidence`;
+  const modeLabel = mode === "openai" ? "GPT interpreted" : mode === "ai" ? "AI interpreted" : mode === "fallback" ? "Fast fallback" : "Search plan";
+  const modelLabel = plan.planner?.provider === "openai" && plan.planner?.model ? plan.planner.model.replaceAll("-", " ") : "";
+  const verificationLabel = plan.grounded ? `${modelLabel ? `${modelLabel} · ` : ""}searchable fields checked` : `${Math.round((Number(plan.confidence) || 0) * 100)}% confidence`;
   const notices = (Array.isArray(plan.notices) ? plan.notices : [])
     .map((notice) => `<div class="plan-notice"><b>Ignored safely</b><span>${escapeHtml(notice)}</span></div>`).join("");
   panel.classList.add("show");
@@ -431,6 +432,81 @@ async function downloadSearchResults() {
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
     toast(`${state.searchTotal.toLocaleString("en-IN")} profiles downloaded · export logged in Activity`);
+    loadMeta().catch(() => {});
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    button.textContent = originalLabel;
+    button.disabled = !state.searchTotal;
+  }
+}
+
+async function downloadSearchResultsPaged() {
+  const button = $("exportResults");
+  const query = $("searchInput").value.trim();
+  button.disabled = true;
+  const originalLabel = button.textContent;
+  try {
+    if (query && state.searchPlanQuery !== query) await runSearch(false, 1);
+    if (!window.TalentDeskXlsx?.createXlsx) throw new Error("Excel exporter is still loading. Refresh once and retry.");
+    const params = buildSearchParams(1);
+    params.delete("page");
+    params.delete("pageSize");
+    const rows = [];
+    let firstPage = null;
+    let total = Math.max(0, state.searchTotal);
+    let totalPages = 1;
+    const startedAt = performance.now();
+    for (let page = 1; page <= totalPages; page += 1) {
+      const response = await fetch("/api/search/export", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "page", page, total, params: Object.fromEntries(params.entries()) }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `Export failed (${response.status})`);
+      if (page === 1) {
+        firstPage = payload;
+        total = Number(payload.total) || 0;
+        totalPages = Number(payload.totalPages) || 1;
+      }
+      rows.push(...(Array.isArray(payload.rows) ? payload.rows : []));
+      const elapsed = Math.max(1, performance.now() - startedAt);
+      const eta = Math.max(0, Math.ceil((elapsed / page) * (totalPages - page) / 1000));
+      button.textContent = `Loading ${Math.min(rows.length, total).toLocaleString("en-IN")}/${total.toLocaleString("en-IN")} · ETA ~${eta}s`;
+    }
+    button.textContent = "Creating Excel on your device…";
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const criteriaText = (firstPage?.criteria || []).map((item) => item.label || item).join(" · ");
+    const metadata = [
+      ["Exported at", { value: firstPage?.exportedAt, type: "date" }],
+      ["Exported by", firstPage?.exportedBy || ""],
+      ["Search query", firstPage?.query || "All profiles"],
+      ["AI interpretation", firstPage?.interpretation || "All profiles"],
+      ["Profiles exported", { value: rows.length, type: "number" }],
+      ["Search criteria", criteriaText],
+      ["Filters", JSON.stringify(firstPage?.filters || {})],
+      ["Note", "Match scores and criteria reflect the Talent Desk search at the time of export. Activity, employment and AI evidence fields are a timestamped snapshot."],
+    ];
+    const workbook = await window.TalentDeskXlsx.createXlsx([
+      { name: "Search Results", columns: firstPage?.columns || [], rows, freezeColumns: 4 },
+      { name: "Export Details", columns: [{ label: "Field", width: 28 }, { label: "Value", width: 80 }], rows: metadata, freezeColumns: 1 },
+    ]);
+    const blob = new Blob([workbook], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const filename = `vedantu-talent-search-results-${String(firstPage?.exportedAt || new Date().toISOString()).slice(0, 10)}.xlsx`;
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    await fetch("/api/search/export", {
+      method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode: "complete", exportedCount: rows.length, query }),
+    }).catch(() => {});
+    toast(`${rows.length.toLocaleString("en-IN")} profiles downloaded · export logged in Activity`);
     loadMeta().catch(() => {});
   } catch (error) {
     toast(error.message);
@@ -1006,7 +1082,7 @@ document.querySelectorAll("[data-track]").forEach((button) => button.onclick = (
   runSearch(false);
 });
 $("searchButton").onclick = () => runSearch(true);
-$("exportResults").onclick = downloadSearchResults;
+$("exportResults").onclick = downloadSearchResultsPaged;
 $("searchInput").addEventListener("keydown", (event) => { if (event.key === "Enter") runSearch(true); });
 ["subjectFilter", "languageFilter", "experienceFilter", "workModeFilter", "minViewsFilter", "minCallsFilter", "maxAgeFilter", "freshnessFilter"].forEach((id) => $(id).addEventListener("change", () => runSearch(false, 1)));
 $("includeClaims").addEventListener("change", () => runSearch(false));
